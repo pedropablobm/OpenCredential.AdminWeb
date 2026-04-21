@@ -206,6 +206,3 @@ Para MySQL/MariaDB basta con cambiar:
 
 - `Database__Provider=MySql`
 - `Database__ConnectionString=Server=...;Port=3306;Database=...;User ID=...;Password=...`
-
-Si quieres, el siguiente paso puede ser agregar auditoria de acciones administrativas y control de roles para separar operadores, coordinadores y superadministradores.
-# OpenCredential.AdminWeb
