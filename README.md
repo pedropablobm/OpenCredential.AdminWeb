@@ -194,11 +194,34 @@ Endpoint de verificacion:
 
 ## Despliegue sugerido en Proxmox
 
-1. Crear una VM Debian/Ubuntu o un contenedor LXC con Docker.
-2. Clonar este repositorio en el servidor.
-3. Ejecutar `docker compose up -d --build`.
-4. Publicar el puerto `8080` directamente o detras de un reverse proxy.
-5. Respaldar el volumen Docker `opencredential_postgres_data`.
+Recomendacion: no instales Docker directamente sobre el host Proxmox VE. Mantén el host limpio y crea una VM Debian/Ubuntu para esta aplicacion.
+
+### Instalacion automatizada
+
+En una VM Debian/Ubuntu recien creada:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pedropablobm/OpenCredential.AdminWeb/main/scripts/install-proxmox-vm.sh | sudo bash
+```
+
+Variables opcionales:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pedropablobm/OpenCredential.AdminWeb/main/scripts/install-proxmox-vm.sh | \
+  sudo ADMINWEB_PORT=8080 ADMIN_USERNAME=admin bash
+```
+
+El script instala Docker, clona el repositorio en `/opt/opencredential-adminweb`, genera credenciales seguras en `.env` y ejecuta `docker compose up -d --build`.
+
+### Instalacion manual
+
+1. Crear una VM Debian/Ubuntu en Proxmox.
+2. Instalar Docker Engine y Docker Compose Plugin.
+3. Clonar este repositorio en el servidor.
+4. Crear un archivo `.env` con credenciales seguras.
+5. Ejecutar `docker compose up -d --build`.
+6. Publicar el puerto `8080` directamente o detras de un reverse proxy.
+7. Respaldar los volumenes Docker `opencredential_postgres_data` y `opencredential_adminweb_data`.
 
 ## Siguiente paso recomendado
 
