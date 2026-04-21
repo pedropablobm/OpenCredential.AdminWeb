@@ -1,0 +1,10 @@
+bin/
+obj/
+App_Data/
+.vs/
+.vscode/
+*.user
+*.suo
+*.log
+.dotnet-home/
+
