@@ -201,17 +201,22 @@ Recomendacion: no instales Docker directamente sobre el host Proxmox VE. Mantén
 En una VM Debian/Ubuntu recien creada:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pedropablobm/OpenCredential.AdminWeb/main/scripts/install-proxmox-vm.sh | sudo bash
+sudo apt-get update
+sudo apt-get install -y git
+git clone https://github.com/pedropablobm/OpenCredential.AdminWeb.git
+cd OpenCredential.AdminWeb
+sudo bash scripts/install-proxmox-vm.sh
 ```
 
 Variables opcionales:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pedropablobm/OpenCredential.AdminWeb/main/scripts/install-proxmox-vm.sh | \
-  sudo ADMINWEB_PORT=8080 ADMIN_USERNAME=admin bash
+sudo ADMINWEB_PORT=8080 ADMIN_USERNAME=admin bash scripts/install-proxmox-vm.sh
 ```
 
 El script instala Docker, clona el repositorio en `/opt/opencredential-adminweb`, genera credenciales seguras en `.env` y ejecuta `docker compose up -d --build`.
+
+Nota: si el repositorio es privado, primero debes autenticar `git clone` con un token de GitHub o subir este script a una ubicacion publica. Las URL de `raw.githubusercontent.com` no funcionan sin acceso publico al archivo.
 
 ### Instalacion manual
 
