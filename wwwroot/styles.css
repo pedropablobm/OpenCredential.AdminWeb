@@ -150,6 +150,22 @@ code {
     border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.app-credits {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 1.2rem;
+    padding: 1rem 1.15rem;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.78);
+    font-size: 0.86rem;
+}
+
+.app-credits strong {
+    color: white;
+}
+
 .workspace {
     padding: 1.6rem;
     display: grid;
@@ -254,6 +270,12 @@ button {
 
 button:hover {
     transform: translateY(-1px);
+}
+
+button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+    transform: none;
 }
 
 .chart-grid {
@@ -441,6 +463,29 @@ th {
     gap: 0.45rem;
 }
 
+.pagination {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.85rem;
+    padding-top: 0.85rem;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+.pagination-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+}
+
+.pagination-actions strong {
+    color: var(--ink);
+}
+
 .inline-actions {
     display: flex;
     gap: 0.75rem;
@@ -494,5 +539,10 @@ th {
 
     .bar-row {
         grid-template-columns: 1fr;
+    }
+
+    .pagination {
+        align-items: flex-start;
+        flex-direction: column;
     }
 }

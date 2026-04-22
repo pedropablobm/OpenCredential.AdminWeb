@@ -9,6 +9,12 @@ Interfaz web administrativa para gestionar:
 - importacion masiva por archivo plano
 - visualizacion grafica del estado y uso de los equipos
 
+## Creditos y licencia
+
+OpenCredential AdminWeb fue desarrollado por Pedro Pablo Bermúdez Medina y Yuri Mercedes Bermúdez Mazuera.
+
+Licencia: BSD 3-Clause. Consulta el archivo `LICENSE`.
+
 ## Ejecucion local
 
 ```powershell

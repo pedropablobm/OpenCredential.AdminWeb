@@ -1,7 +1,22 @@
 const state = {
     snapshot: null,
     dashboard: null,
-    session: null
+    session: null,
+    pagination: {
+        careersTable: 1,
+        semestersTable: 1,
+        usersTable: 1,
+        computersTable: 1,
+        auditTable: 1
+    }
+};
+
+const pageSizeByTable = {
+    careersTable: 8,
+    semestersTable: 8,
+    usersTable: 8,
+    computersTable: 8,
+    auditTable: 10
 };
 
 async function fetchJson(url, options) {
@@ -194,7 +209,8 @@ function renderComputers(items) {
 }
 
 function renderTables(snapshot) {
-    const careersTable = createTable(
+    renderPaginatedTable(
+        "careersTable",
         ["Nombre", "Estado", "Acciones"],
         snapshot.careers.map(item => [
             item.name,
@@ -206,7 +222,8 @@ function renderTables(snapshot) {
         ])
     );
 
-    const semestersTable = createTable(
+    renderPaginatedTable(
+        "semestersTable",
         ["Nombre", "Estado", "Acciones"],
         snapshot.semesters.map(item => [
             item.name,
@@ -218,7 +235,8 @@ function renderTables(snapshot) {
         ])
     );
 
-    const usersTable = createTable(
+    renderPaginatedTable(
+        "usersTable",
         ["Usuario", "Nombre", "Carrera", "Semestre", "Hash", "Estado", "Acciones"],
         snapshot.users.map(item => [
             item.username,
@@ -234,7 +252,8 @@ function renderTables(snapshot) {
         ])
     );
 
-    const computersTable = createTable(
+    renderPaginatedTable(
+        "computersTable",
         ["Equipo", "Ubicacion", "Inventario", "IP", "Estado", "Acciones"],
         snapshot.computers.map(item => [
             item.name,
@@ -248,27 +267,68 @@ function renderTables(snapshot) {
             )
         ])
     );
-
-    document.getElementById("careersTable").innerHTML = careersTable;
-    document.getElementById("semestersTable").innerHTML = semestersTable;
-    document.getElementById("usersTable").innerHTML = usersTable;
-    document.getElementById("computersTable").innerHTML = computersTable;
 }
 
 function renderAudit(entries) {
-    document.getElementById("auditTable").innerHTML = entries.length
-        ? createTable(
-            ["Fecha", "Actor", "Accion", "Entidad", "Detalle", "IP"],
-            entries.map(item => [
-                item.createdUtc ? formatAuditDate(item.createdUtc) : "",
-                item.actorUsername,
-                item.action,
-                `${item.entityType}<br><span class="muted">${item.entityKey}</span>`,
-                item.summary,
-                item.remoteIp || "Sin IP"
-            ])
-        )
-        : `<p class="muted">Todavia no hay eventos de auditoria.</p>`;
+    renderPaginatedTable(
+        "auditTable",
+        ["Fecha", "Actor", "Accion", "Entidad", "Detalle", "IP"],
+        entries.map(item => [
+            item.createdUtc ? formatAuditDate(item.createdUtc) : "",
+            item.actorUsername,
+            item.action,
+            `${item.entityType}<br><span class="muted">${item.entityKey}</span>`,
+            item.summary,
+            item.remoteIp || "Sin IP"
+        ]),
+        "Todavia no hay eventos de auditoria."
+    );
+}
+
+function renderPaginatedTable(hostId, headers, rows, emptyMessage = "No hay registros para mostrar.") {
+    const host = document.getElementById(hostId);
+    const pageSize = pageSizeByTable[hostId] || 8;
+    const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+    const currentPage = Math.min(state.pagination[hostId] || 1, totalPages);
+    state.pagination[hostId] = currentPage;
+
+    if (!rows.length) {
+        host.innerHTML = `<p class="muted">${emptyMessage}</p>`;
+        return;
+    }
+
+    const start = (currentPage - 1) * pageSize;
+    const pageRows = rows.slice(start, start + pageSize);
+    host.innerHTML = `
+        ${createTable(headers, pageRows)}
+        ${createPagination(hostId, rows.length, currentPage, totalPages, start, pageRows.length)}
+    `;
+    bindPagination(hostId);
+}
+
+function createPagination(hostId, totalRows, currentPage, totalPages, start, visibleRows) {
+    const first = start + 1;
+    const last = start + visibleRows;
+    return `
+        <div class="pagination" data-table="${hostId}">
+            <span>Mostrando ${first}-${last} de ${totalRows}</span>
+            <div class="pagination-actions">
+                <button type="button" class="btn-muted" data-page="prev" ${currentPage === 1 ? "disabled" : ""}>Anterior</button>
+                <strong>Pagina ${currentPage} de ${totalPages}</strong>
+                <button type="button" class="btn-muted" data-page="next" ${currentPage === totalPages ? "disabled" : ""}>Siguiente</button>
+            </div>
+        </div>
+    `;
+}
+
+function bindPagination(hostId) {
+    document.querySelectorAll(`[data-table="${hostId}"] button[data-page]`).forEach(button => {
+        button.addEventListener("click", () => {
+            state.pagination[hostId] += button.dataset.page === "next" ? 1 : -1;
+            renderTables(state.snapshot);
+            renderAudit(state.snapshot.auditEntries || []);
+        });
+    });
 }
 
 function createTable(headers, rows) {
