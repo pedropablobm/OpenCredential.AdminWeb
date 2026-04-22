@@ -359,9 +359,17 @@ function createTable(headers, rows) {
     return `<table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`;
 }
 
+function createClientId(prefix) {
+    if (globalThis.crypto?.randomUUID) {
+        return `${prefix}-${globalThis.crypto.randomUUID()}`;
+    }
+
+    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 function tableActions(onEdit, onDelete) {
-    const editId = `edit-${crypto.randomUUID()}`;
-    const deleteId = `delete-${crypto.randomUUID()}`;
+    const editId = createClientId("edit");
+    const deleteId = createClientId("delete");
     queueMicrotask(() => {
         document.getElementById(editId)?.addEventListener("click", onEdit);
         document.getElementById(deleteId)?.addEventListener("click", onDelete);
