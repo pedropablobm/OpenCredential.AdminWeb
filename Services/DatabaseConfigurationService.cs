@@ -46,7 +46,8 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
             SslMode = fallback.SslMode,
             AutoInitialize = fallback.AutoInitialize,
             RuntimeConfigurationExists = configured is not null,
-            RequiresRestart = false
+            RequiresRestart = false,
+            PasswordConfigured = !string.IsNullOrWhiteSpace(fallback.Password)
         };
     }
 
@@ -54,7 +55,8 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
     {
         try
         {
-            await using var connection = CreateConnection(input);
+            var effectiveInput = ResolvePassword(input);
+            await using var connection = CreateConnection(effectiveInput);
             await connection.OpenAsync();
             return new DatabaseConfigurationResult
             {
@@ -76,7 +78,8 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
 
     public async Task<DatabaseConfigurationResult> SaveConfigurationAsync(DatabaseConfigurationInput input)
     {
-        var test = await TestConnectionAsync(input);
+        var effectiveInput = ResolvePassword(input);
+        var test = await TestConnectionAsync(effectiveInput);
         if (!test.Success)
         {
             return test;
@@ -87,11 +90,11 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
             Database = new DatabaseOptions
             {
                 Mode = "Sql",
-                Provider = NormalizeProvider(input.Provider),
-                ConnectionString = BuildConnectionString(input),
-                AutoInitialize = input.AutoInitialize
+                Provider = NormalizeProvider(effectiveInput.Provider),
+                ConnectionString = BuildConnectionString(effectiveInput),
+                AutoInitialize = effectiveInput.AutoInitialize
             },
-            DatabaseSetup = NormalizeInput(input)
+            DatabaseSetup = NormalizeInput(effectiveInput)
         };
 
         var path = GetRuntimeConfigurationPath();
@@ -133,6 +136,32 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
         };
     }
 
+    private DatabaseConfigurationInput ResolvePassword(DatabaseConfigurationInput input)
+    {
+        if (!string.IsNullOrWhiteSpace(input.Password))
+        {
+            return input;
+        }
+
+        var configured = LoadRuntimeSetup();
+        if (configured is null || string.IsNullOrWhiteSpace(configured.Password))
+        {
+            return input;
+        }
+
+        return new DatabaseConfigurationInput
+        {
+            Provider = input.Provider,
+            Host = input.Host,
+            Port = input.Port,
+            DatabaseName = input.DatabaseName,
+            Username = input.Username,
+            Password = configured.Password,
+            SslMode = input.SslMode,
+            AutoInitialize = input.AutoInitialize
+        };
+    }
+
     private DbConnection CreateConnection(DatabaseConfigurationInput input)
     {
         var provider = NormalizeProvider(input.Provider);
@@ -152,7 +181,8 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
             DatabaseName = input.DatabaseName.Trim(),
             Username = input.Username.Trim(),
             SslMode = string.IsNullOrWhiteSpace(input.SslMode) ? "Disable" : input.SslMode.Trim(),
-            AutoInitialize = input.AutoInitialize
+            AutoInitialize = input.AutoInitialize,
+            Password = input.Password ?? string.Empty
         };
     }
 
@@ -192,6 +222,7 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
         public int Port { get; init; } = 5432;
         public string DatabaseName { get; init; } = "";
         public string Username { get; init; } = "";
+        public string Password { get; init; } = "";
         public string SslMode { get; init; } = "Disable";
         public bool AutoInitialize { get; init; } = true;
     }

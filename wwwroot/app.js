@@ -22,7 +22,14 @@ async function fetchJson(url, options) {
     }
 
     if (!response.ok) {
-        throw new Error(`Error ${response.status}`);
+        let detail = "";
+        try {
+            const errorPayload = await response.json();
+            detail = errorPayload.message || errorPayload.title || JSON.stringify(errorPayload);
+        } catch {
+            detail = await response.text();
+        }
+        throw new Error(detail || `Error ${response.status}`);
     }
 
     if (response.status === 204) {
@@ -50,6 +57,11 @@ async function loadDatabaseConfiguration() {
         document.getElementById("dbPort").value = config.port || (config.provider === "MySql" ? 3306 : 5432);
         document.getElementById("dbName").value = config.databaseName || "";
         document.getElementById("dbUsername").value = config.username || "";
+        document.getElementById("dbPassword").value = "";
+        document.getElementById("dbPassword").placeholder = config.passwordConfigured
+            ? "Clave guardada. Escribela solo si quieres cambiarla"
+            : "Clave de base de datos";
+        document.getElementById("dbPassword").required = !config.passwordConfigured;
         document.getElementById("dbSslMode").value = config.sslMode || "Disable";
         document.getElementById("dbAutoInitialize").checked = config.autoInitialize !== false;
         document.getElementById("databaseConfigResult").textContent = config.sqlEnabled
@@ -382,20 +394,41 @@ function bindForms() {
     });
 
     document.getElementById("testDatabaseBtn").addEventListener("click", async () => {
-        const result = await fetchJson("/api/configuration/database/test", {
-            method: "POST",
-            body: JSON.stringify(getDatabaseConfigPayload())
-        });
-        document.getElementById("databaseConfigResult").textContent = result.message;
+        const resultHost = document.getElementById("databaseConfigResult");
+        const form = document.getElementById("databaseConfigForm");
+        if (!form.reportValidity()) {
+            return;
+        }
+
+        resultHost.textContent = "Probando conexion...";
+        try {
+            const result = await fetchJson("/api/configuration/database/test", {
+                method: "POST",
+                body: JSON.stringify(getDatabaseConfigPayload())
+            });
+            resultHost.textContent = result.message;
+        } catch (error) {
+            resultHost.textContent = `No fue posible probar la conexion: ${error.message}`;
+        }
     });
 
     document.getElementById("databaseConfigForm").addEventListener("submit", async event => {
         event.preventDefault();
-        const result = await fetchJson("/api/configuration/database", {
-            method: "PUT",
-            body: JSON.stringify(getDatabaseConfigPayload())
-        });
-        document.getElementById("databaseConfigResult").textContent = result.message;
+        const resultHost = document.getElementById("databaseConfigResult");
+        resultHost.textContent = "Guardando configuracion...";
+        try {
+            const result = await fetchJson("/api/configuration/database", {
+                method: "PUT",
+                body: JSON.stringify(getDatabaseConfigPayload())
+            });
+            resultHost.textContent = result.requiresRestart
+                ? `${result.message} Ejecuta: docker restart opencredential-adminweb`
+                : result.message;
+            document.getElementById("dbPassword").placeholder = "Clave guardada. Escribela solo si quieres cambiarla";
+            document.getElementById("dbPassword").required = false;
+        } catch (error) {
+            resultHost.textContent = `No fue posible guardar la configuracion: ${error.message}`;
+        }
     });
 
     document.getElementById("generatePasswordBtn").addEventListener("click", () => {

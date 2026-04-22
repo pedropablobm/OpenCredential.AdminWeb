@@ -240,6 +240,7 @@ public sealed class DatabaseConfigurationResponse
     public bool AutoInitialize { get; init; }
     public bool RuntimeConfigurationExists { get; init; }
     public bool RequiresRestart { get; init; }
+    public bool PasswordConfigured { get; init; }
 }
 
 public sealed class DatabaseConfigurationResult
