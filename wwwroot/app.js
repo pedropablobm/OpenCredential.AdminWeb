@@ -55,13 +55,28 @@ async function fetchJson(url, options) {
 }
 
 async function loadAll() {
-    const snapshot = await fetchJson("/api/summary");
-    state.snapshot = snapshot;
-    populateSelects(snapshot);
-    renderTables(snapshot);
-    renderAudit(snapshot.auditEntries || []);
     await loadDatabaseConfiguration();
-    await loadDashboard();
+    try {
+        const snapshot = await fetchJson("/api/summary");
+        state.snapshot = snapshot;
+        populateSelects(snapshot);
+        renderTables(snapshot);
+        renderAudit(snapshot.auditEntries || []);
+    } catch (error) {
+        showDataLoadError(error);
+        const snapshot = createEmptySnapshot();
+        state.snapshot = snapshot;
+        populateSelects(snapshot);
+        renderTables(snapshot);
+        renderAudit([]);
+    }
+
+    try {
+        await loadDashboard();
+    } catch (error) {
+        showDataLoadError(error);
+        renderDashboard(createEmptyDashboard());
+    }
 }
 
 async function loadDatabaseConfiguration() {
@@ -192,6 +207,11 @@ function renderTrend(hostId, items) {
 
 function renderComputers(items) {
     const host = document.getElementById("computerGrid");
+    if (!items.length) {
+        host.innerHTML = `<p class="muted">No hay equipos para mostrar.</p>`;
+        return;
+    }
+
     host.innerHTML = items.map(item => {
         const statusClass = normalizeStatusClass(item.status);
         return `
@@ -410,6 +430,47 @@ function translateStatus(status) {
 
 function normalizeStatusClass(status) {
     return status.toLowerCase().replaceAll(" ", "-");
+}
+
+function showDataLoadError(error) {
+    const resultHost = document.getElementById("databaseConfigResult");
+    if (!resultHost || error.message === "AUTH_REQUIRED" || error.message === "FORBIDDEN") {
+        return;
+    }
+
+    resultHost.textContent = `La configuracion esta guardada, pero no fue posible cargar datos desde la base: ${error.message}`;
+}
+
+function createEmptySnapshot() {
+    return {
+        careers: [],
+        semesters: [],
+        users: [],
+        computers: [],
+        usageRecords: [],
+        auditEntries: []
+    };
+}
+
+function createEmptyDashboard() {
+    return {
+        kpis: {
+            totalUsers: 0,
+            activeUsers: 0,
+            availableComputers: 0,
+            inUseComputers: 0,
+            disabledComputers: 0,
+            hoursInRange: 0
+        },
+        equipmentStatus: [
+            { label: "Disponible", value: 0 },
+            { label: "En uso", value: 0 },
+            { label: "Deshabilitado", value: 0 }
+        ],
+        usageByCareer: [],
+        dailyUsageTrend: [],
+        computerCards: []
+    };
 }
 
 function bindForms() {

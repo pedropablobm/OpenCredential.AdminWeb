@@ -138,6 +138,14 @@ static AuditEntryInput CreateAuditEntry(HttpContext context, string actor, strin
     };
 }
 
+static IResult DataLoadProblem(Exception exception)
+{
+    return Results.Problem(
+        title: "No fue posible cargar datos desde la base configurada.",
+        detail: exception.Message,
+        statusCode: StatusCodes.Status500InternalServerError);
+}
+
 app.MapPost("/api/auth/login", async (AdminLoginInput input, HttpContext context, IAdminAuthService authService, IOptions<AdminAuthOptions> authOptionsAccessor) =>
 {
     var adminIdentity = authService.ValidateCredentials(input.Username, input.Password);
@@ -205,14 +213,38 @@ app.MapGet("/api/auth/me", (HttpContext context, IAdminAuthService authService) 
 
 var protectedApi = app.MapGroup("/api").RequireAuthorization();
 
-protectedApi.MapGet("/summary", (IAdminRepository repository) => Results.Ok(repository.GetSnapshot()));
+protectedApi.MapGet("/summary", (IAdminRepository repository) =>
+{
+    try
+    {
+        return Results.Ok(repository.GetSnapshot());
+    }
+    catch (Exception exception)
+    {
+        return DataLoadProblem(exception);
+    }
+});
 protectedApi.MapGet("/dashboard", (IAdminRepository repository, int? rangeDays, int? careerId, int? semesterId, string? status) =>
 {
-    return Results.Ok(repository.GetDashboard(rangeDays ?? 30, careerId, semesterId, status));
+    try
+    {
+        return Results.Ok(repository.GetDashboard(rangeDays ?? 30, careerId, semesterId, status));
+    }
+    catch (Exception exception)
+    {
+        return DataLoadProblem(exception);
+    }
 });
 protectedApi.MapGet("/audit", (IAdminRepository repository, int? take) =>
 {
-    return Results.Ok(repository.GetAuditEntries(take ?? 50));
+    try
+    {
+        return Results.Ok(repository.GetAuditEntries(take ?? 50));
+    }
+    catch (Exception exception)
+    {
+        return DataLoadProblem(exception);
+    }
 }).RequireAuthorization("CanViewAudit");
 
 protectedApi.MapGet("/configuration/database", (IDatabaseConfigurationService configurationService) =>
