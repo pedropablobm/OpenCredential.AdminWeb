@@ -133,6 +133,40 @@ docker run -d \
   opencredential-adminweb:latest
 ```
 
+Si usas la imagen publicada en Docker Hub:
+
+```bash
+docker run -d \
+  --name opencredential-adminweb \
+  -p 8080:8080 \
+  -e ASPNETCORE_ENVIRONMENT=Production \
+  -e AdminAuth__Username=admin \
+  -e AdminAuth__Password=CAMBIA_ESTA_CLAVE \
+  -e AdminAuth__Role=SuperAdmin \
+  -e ADMINWEB_DATA_DIR=/data \
+  -v opencredential_adminweb_data:/data \
+  --restart unless-stopped \
+  pedropablobm/opencredential-adminweb:test
+```
+
+La aplicacion puede iniciar en modo `Json` y luego configurarse desde la interfaz para conectarse a una base externa PostgreSQL o MySQL.
+
+### Configurar base externa desde la interfaz
+
+1. Inicia sesion como `SuperAdmin`.
+2. Ve al panel `Configuracion de base de datos`.
+3. Selecciona `PostgreSQL` o `MySQL / MariaDB`.
+4. Captura host, puerto, base de datos, usuario, clave y modo SSL.
+5. Usa `Probar conexion`.
+6. Si la conexion es correcta, usa `Guardar configuracion`.
+7. Reinicia el contenedor:
+
+```bash
+docker restart opencredential-adminweb
+```
+
+La configuracion se guarda en `/data/adminweb-runtime.json`, por eso es importante mantener montado el volumen `opencredential_adminweb_data:/data`.
+
 ### Ejecutar con Compose
 
 ```bash

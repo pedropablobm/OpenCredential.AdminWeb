@@ -22,8 +22,9 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.Configure<DatabaseOptions>(builder.Configuration.GetSection("Database"));
 builder.Services.Configure<AdminAuthOptions>(builder.Configuration.GetSection("AdminAuth"));
 var adminAuthOptions = builder.Configuration.GetSection("AdminAuth").Get<AdminAuthOptions>() ?? new AdminAuthOptions();
-var databaseOptions = builder.Configuration.GetSection("Database").Get<DatabaseOptions>() ?? new DatabaseOptions();
 var dataDirectory = RepositorySupport.ResolveDataDirectory(builder.Environment);
+builder.Configuration.AddJsonFile(Path.Combine(dataDirectory, DatabaseConfigurationService.RuntimeConfigurationFileName), optional: true, reloadOnChange: false);
+var databaseOptions = builder.Configuration.GetSection("Database").Get<DatabaseOptions>() ?? new DatabaseOptions();
 if (databaseOptions.Mode.Equals("sql", StringComparison.OrdinalIgnoreCase))
 {
     builder.Services.AddSingleton<IAdminRepository, SqlAdminRepository>();
@@ -33,6 +34,7 @@ else
     builder.Services.AddSingleton<IAdminRepository, JsonAdminRepository>();
 }
 builder.Services.AddSingleton<IAdminAuthService, AdminAuthService>();
+builder.Services.AddSingleton<IDatabaseConfigurationService, DatabaseConfigurationService>();
 builder.Services
     .AddDataProtection()
     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataDirectory, "keys")))
@@ -68,6 +70,7 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("CanManageUsers", policy => policy.RequireRole(AdminRoles.SuperAdmin, AdminRoles.Coordinator));
     options.AddPolicy("CanManageComputers", policy => policy.RequireRole(AdminRoles.SuperAdmin, AdminRoles.Operator));
     options.AddPolicy("CanManageUsage", policy => policy.RequireRole(AdminRoles.SuperAdmin, AdminRoles.Operator));
+    options.AddPolicy("CanManageSettings", policy => policy.RequireRole(AdminRoles.SuperAdmin));
 });
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
@@ -99,15 +102,40 @@ static string? GetRemoteIp(HttpContext context)
 
 static void Audit(HttpContext context, IAdminRepository repository, string action, string entityType, string entityKey, string summary)
 {
-    repository.RecordAudit(new AuditEntryInput
+    try
     {
-        ActorUsername = GetActor(context),
+        repository.RecordAudit(CreateAuditEntry(context, GetActor(context), action, entityType, entityKey, summary));
+    }
+    catch
+    {
+        // La auditoria no debe bloquear una operacion administrativa.
+    }
+}
+
+static void TryAudit(HttpContext context, string actor, string action, string entityType, string entityKey, string summary)
+{
+    try
+    {
+        var repository = context.RequestServices.GetService<IAdminRepository>();
+        repository?.RecordAudit(CreateAuditEntry(context, actor, action, entityType, entityKey, summary));
+    }
+    catch
+    {
+        // Permite recuperar configuraciones aunque la base configurada este caida.
+    }
+}
+
+static AuditEntryInput CreateAuditEntry(HttpContext context, string actor, string action, string entityType, string entityKey, string summary)
+{
+    return new AuditEntryInput
+    {
+        ActorUsername = actor,
         Action = action,
         EntityType = entityType,
         EntityKey = entityKey,
         Summary = summary,
         RemoteIp = GetRemoteIp(context)
-    });
+    };
 }
 
 app.MapPost("/api/auth/login", async (AdminLoginInput input, HttpContext context, IAdminAuthService authService, IOptions<AdminAuthOptions> authOptionsAccessor) =>
@@ -115,16 +143,7 @@ app.MapPost("/api/auth/login", async (AdminLoginInput input, HttpContext context
     var adminIdentity = authService.ValidateCredentials(input.Username, input.Password);
     if (adminIdentity is null)
     {
-        var failedAuditRepository = context.RequestServices.GetRequiredService<IAdminRepository>();
-        failedAuditRepository.RecordAudit(new AuditEntryInput
-        {
-            ActorUsername = string.IsNullOrWhiteSpace(input.Username) ? "anon" : input.Username.Trim(),
-            Action = "LoginFailed",
-            EntityType = "Security",
-            EntityKey = "admin-console",
-            Summary = "Intento fallido de acceso a la consola administrativa",
-            RemoteIp = GetRemoteIp(context)
-        });
+        TryAudit(context, string.IsNullOrWhiteSpace(input.Username) ? "anon" : input.Username.Trim(), "LoginFailed", "Security", "admin-console", "Intento fallido de acceso a la consola administrativa");
         return Results.Unauthorized();
     }
 
@@ -148,16 +167,7 @@ app.MapPost("/api/auth/login", async (AdminLoginInput input, HttpContext context
             ExpiresUtc = DateTimeOffset.UtcNow.AddHours(Math.Max(1, authOptions.SessionHours))
         });
 
-    var loginAuditRepository = context.RequestServices.GetRequiredService<IAdminRepository>();
-    loginAuditRepository.RecordAudit(new AuditEntryInput
-    {
-        ActorUsername = adminIdentity.Username,
-        Action = "Login",
-        EntityType = "Security",
-        EntityKey = "admin-console",
-        Summary = $"Inicio de sesion correcto en la consola administrativa con rol {adminIdentity.Role}",
-        RemoteIp = GetRemoteIp(context)
-    });
+    TryAudit(context, adminIdentity.Username, "Login", "Security", "admin-console", $"Inicio de sesion correcto en la consola administrativa con rol {adminIdentity.Role}");
 
     return Results.Ok(new AdminSessionInfo
     {
@@ -171,17 +181,8 @@ app.MapPost("/api/auth/login", async (AdminLoginInput input, HttpContext context
 app.MapPost("/api/auth/logout", async (HttpContext context) =>
 {
     var actor = GetActor(context);
-    var repository = context.RequestServices.GetRequiredService<IAdminRepository>();
     await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-    repository.RecordAudit(new AuditEntryInput
-    {
-        ActorUsername = actor,
-        Action = "Logout",
-        EntityType = "Security",
-        EntityKey = "admin-console",
-        Summary = "Cierre de sesion de la consola administrativa",
-        RemoteIp = GetRemoteIp(context)
-    });
+    TryAudit(context, actor, "Logout", "Security", "admin-console", "Cierre de sesion de la consola administrativa");
     return Results.NoContent();
 });
 
@@ -213,6 +214,27 @@ protectedApi.MapGet("/audit", (IAdminRepository repository, int? take) =>
 {
     return Results.Ok(repository.GetAuditEntries(take ?? 50));
 }).RequireAuthorization("CanViewAudit");
+
+protectedApi.MapGet("/configuration/database", (IDatabaseConfigurationService configurationService) =>
+{
+    return Results.Ok(configurationService.GetConfiguration());
+}).RequireAuthorization("CanManageSettings");
+
+protectedApi.MapPost("/configuration/database/test", async (DatabaseConfigurationInput input, IDatabaseConfigurationService configurationService) =>
+{
+    return Results.Ok(await configurationService.TestConnectionAsync(input));
+}).RequireAuthorization("CanManageSettings");
+
+protectedApi.MapPut("/configuration/database", async (DatabaseConfigurationInput input, HttpContext context, IDatabaseConfigurationService configurationService) =>
+{
+    var result = await configurationService.SaveConfigurationAsync(input);
+    if (result.Success)
+    {
+        TryAudit(context, GetActor(context), "UpdateDatabaseConfiguration", "Configuration", input.Provider, $"Configuracion de base de datos guardada para {input.Provider} en {input.Host}:{input.Port}.");
+    }
+
+    return Results.Ok(result);
+}).RequireAuthorization("CanManageSettings");
 
 protectedApi.MapPost("/import/users", async (HttpRequest request, HttpContext context, IAdminRepository repository) =>
 {

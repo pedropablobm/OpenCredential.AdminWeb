@@ -38,7 +38,28 @@ async function loadAll() {
     populateSelects(snapshot);
     renderTables(snapshot);
     renderAudit(snapshot.auditEntries || []);
+    await loadDatabaseConfiguration();
     await loadDashboard();
+}
+
+async function loadDatabaseConfiguration() {
+    try {
+        const config = await fetchJson("/api/configuration/database");
+        document.getElementById("dbProvider").value = config.provider || "PostgreSql";
+        document.getElementById("dbHost").value = config.host || "";
+        document.getElementById("dbPort").value = config.port || (config.provider === "MySql" ? 3306 : 5432);
+        document.getElementById("dbName").value = config.databaseName || "";
+        document.getElementById("dbUsername").value = config.username || "";
+        document.getElementById("dbSslMode").value = config.sslMode || "Disable";
+        document.getElementById("dbAutoInitialize").checked = config.autoInitialize !== false;
+        document.getElementById("databaseConfigResult").textContent = config.sqlEnabled
+            ? `Modo actual: SQL (${config.provider}).`
+            : "Modo actual: JSON local. Guarda una configuracion SQL y reinicia el contenedor para usar la base externa.";
+    } catch (error) {
+        if (error.message === "FORBIDDEN") {
+            document.getElementById("databaseConfigResult").textContent = "Tu rol no permite ver esta configuracion.";
+        }
+    }
 }
 
 async function loadDashboard() {
@@ -356,6 +377,27 @@ function bindForms() {
         handleUnauthorized();
     });
 
+    document.getElementById("dbProvider").addEventListener("change", () => {
+        document.getElementById("dbPort").value = document.getElementById("dbProvider").value === "MySql" ? 3306 : 5432;
+    });
+
+    document.getElementById("testDatabaseBtn").addEventListener("click", async () => {
+        const result = await fetchJson("/api/configuration/database/test", {
+            method: "POST",
+            body: JSON.stringify(getDatabaseConfigPayload())
+        });
+        document.getElementById("databaseConfigResult").textContent = result.message;
+    });
+
+    document.getElementById("databaseConfigForm").addEventListener("submit", async event => {
+        event.preventDefault();
+        const result = await fetchJson("/api/configuration/database", {
+            method: "PUT",
+            body: JSON.stringify(getDatabaseConfigPayload())
+        });
+        document.getElementById("databaseConfigResult").textContent = result.message;
+    });
+
     document.getElementById("generatePasswordBtn").addEventListener("click", () => {
         document.getElementById("userPassword").value = generatePassword();
         document.getElementById("passwordActionResult").textContent = "Clave segura generada localmente. Guarda el usuario para aplicarla.";
@@ -477,6 +519,19 @@ function bindForms() {
 
 function parseNullableInt(value) {
     return value ? Number(value) : null;
+}
+
+function getDatabaseConfigPayload() {
+    return {
+        provider: document.getElementById("dbProvider").value,
+        host: document.getElementById("dbHost").value,
+        port: Number(document.getElementById("dbPort").value),
+        databaseName: document.getElementById("dbName").value,
+        username: document.getElementById("dbUsername").value,
+        password: document.getElementById("dbPassword").value,
+        sslMode: document.getElementById("dbSslMode").value,
+        autoInitialize: document.getElementById("dbAutoInitialize").checked
+    };
 }
 
 function formatAuditDate(value) {

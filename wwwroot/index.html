@@ -112,6 +112,38 @@
 
             <section class="panel">
                 <div class="panel-heading">
+                    <h3>Configuracion de base de datos</h3>
+                    <span>PostgreSQL o MySQL externo</span>
+                </div>
+                <form id="databaseConfigForm" class="entity-form two-columns">
+                    <select id="dbProvider">
+                        <option value="PostgreSql">PostgreSQL</option>
+                        <option value="MySql">MySQL / MariaDB</option>
+                    </select>
+                    <input type="text" id="dbHost" placeholder="Host o IP del servidor" required />
+                    <input type="number" id="dbPort" placeholder="Puerto" min="1" max="65535" required />
+                    <input type="text" id="dbName" placeholder="Nombre de la base de datos" required />
+                    <input type="text" id="dbUsername" placeholder="Usuario de base de datos" required />
+                    <input type="password" id="dbPassword" placeholder="Clave de base de datos" required />
+                    <select id="dbSslMode">
+                        <option value="Disable">SSL deshabilitado</option>
+                        <option value="Prefer">SSL preferido</option>
+                        <option value="Require">SSL requerido</option>
+                    </select>
+                    <label class="toggle">
+                        <input type="checkbox" id="dbAutoInitialize" checked />
+                        Crear/actualizar tablas si faltan
+                    </label>
+                    <div class="inline-actions full-span">
+                        <button type="button" id="testDatabaseBtn" class="btn-muted">Probar conexion</button>
+                        <button type="submit">Guardar configuracion</button>
+                    </div>
+                    <p class="muted full-span" id="databaseConfigResult"></p>
+                </form>
+            </section>
+
+            <section class="panel">
+                <div class="panel-heading">
                     <h3>Mapa visual del parque tecnologico</h3>
                     <span>Lectura rapida del estado actual</span>
                 </div>

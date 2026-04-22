@@ -215,3 +215,36 @@ public sealed class AdminSessionInfo
     public required string Role { get; init; }
     public bool AuthenticationEnabled { get; init; }
 }
+
+public sealed class DatabaseConfigurationInput
+{
+    public string Provider { get; init; } = "PostgreSql";
+    public required string Host { get; init; }
+    public int Port { get; init; } = 5432;
+    public required string DatabaseName { get; init; }
+    public required string Username { get; init; }
+    public string? Password { get; init; }
+    public string SslMode { get; init; } = "Disable";
+    public bool AutoInitialize { get; init; } = true;
+}
+
+public sealed class DatabaseConfigurationResponse
+{
+    public bool SqlEnabled { get; init; }
+    public required string Provider { get; init; }
+    public required string Host { get; init; }
+    public int Port { get; init; }
+    public required string DatabaseName { get; init; }
+    public required string Username { get; init; }
+    public required string SslMode { get; init; }
+    public bool AutoInitialize { get; init; }
+    public bool RuntimeConfigurationExists { get; init; }
+    public bool RequiresRestart { get; init; }
+}
+
+public sealed class DatabaseConfigurationResult
+{
+    public bool Success { get; init; }
+    public required string Message { get; init; }
+    public bool RequiresRestart { get; init; }
+}
