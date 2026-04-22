@@ -9,10 +9,26 @@ internal static class RepositorySupport
         var configuredDataDirectory = Environment.GetEnvironmentVariable("ADMINWEB_DATA_DIR");
         var dataDirectory = string.IsNullOrWhiteSpace(configuredDataDirectory)
             ? Path.Combine(environment.ContentRootPath, "App_Data")
-            : Path.GetFullPath(configuredDataDirectory);
+            : Path.GetFullPath(NormalizeContainerDataDirectory(configuredDataDirectory));
 
         Directory.CreateDirectory(dataDirectory);
         return dataDirectory;
+    }
+
+    private static string NormalizeContainerDataDirectory(string configuredDataDirectory)
+    {
+        if (!string.Equals(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase))
+        {
+            return configuredDataDirectory;
+        }
+
+        const string gitBashPrefix = "C:/Program Files/Git/";
+        if (configuredDataDirectory.StartsWith(gitBashPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return "/" + configuredDataDirectory[gitBashPrefix.Length..].TrimStart('/');
+        }
+
+        return configuredDataDirectory;
     }
 
     public static DashboardResponse BuildDashboard(AdminSnapshot snapshot, int rangeDays, int? careerId, int? semesterId, string? status)
