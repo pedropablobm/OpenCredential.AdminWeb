@@ -17,6 +17,10 @@ public interface IAdminRepository
     Computer CreateComputer(ComputerInput input);
     Computer? UpdateComputer(int id, ComputerInput input);
     bool DeleteComputer(int id);
+    Room CreateRoom(RoomInput input);
+    Room? UpdateRoom(int id, RoomInput input);
+    bool DeleteRoom(int id);
+    List<RoomLayoutItem> SaveRoomLayout(int roomId, RoomLayoutInput input);
     UserAccount CreateUser(UserInput input);
     UserAccount? UpdateUser(int id, UserInput input);
     bool DeleteUser(int id);

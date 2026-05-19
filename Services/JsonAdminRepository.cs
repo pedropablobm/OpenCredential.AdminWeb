@@ -213,8 +213,131 @@ public sealed class JsonAdminRepository : IAdminRepository
             var removed = _snapshot.Computers.RemoveAll(item => item.Id == id) > 0;
             if (!removed) return false;
             _snapshot.UsageRecords.RemoveAll(item => item.ComputerId == id);
+            foreach (var item in _snapshot.RoomLayoutItems.Where(layoutItem => layoutItem.ComputerId == id))
+            {
+                item.ComputerId = null;
+            }
             SaveSnapshot();
             return true;
+        }
+    }
+
+    public Room CreateRoom(RoomInput input)
+    {
+        lock (_sync)
+        {
+            var room = new Room
+            {
+                Id = RepositorySupport.NextId(_snapshot.Rooms.Select(item => item.Id)),
+                Name = input.Name.Trim(),
+                Code = input.Code.Trim(),
+                CanvasWidth = Math.Max(640, input.CanvasWidth),
+                CanvasHeight = Math.Max(360, input.CanvasHeight),
+                Active = input.Active
+            };
+
+            _snapshot.Rooms.Add(room);
+            SaveSnapshot();
+            return room;
+        }
+    }
+
+    public Room? UpdateRoom(int id, RoomInput input)
+    {
+        lock (_sync)
+        {
+            var room = _snapshot.Rooms.FirstOrDefault(item => item.Id == id);
+            if (room is null) return null;
+            room.Name = input.Name.Trim();
+            room.Code = input.Code.Trim();
+            room.CanvasWidth = Math.Max(640, input.CanvasWidth);
+            room.CanvasHeight = Math.Max(360, input.CanvasHeight);
+            room.Active = input.Active;
+            SaveSnapshot();
+            return room;
+        }
+    }
+
+    public bool DeleteRoom(int id)
+    {
+        lock (_sync)
+        {
+            var removed = _snapshot.Rooms.RemoveAll(item => item.Id == id) > 0;
+            if (!removed) return false;
+            _snapshot.RoomLayoutItems.RemoveAll(item => item.RoomId == id);
+            SaveSnapshot();
+            return true;
+        }
+    }
+
+    public List<RoomLayoutItem> SaveRoomLayout(int roomId, RoomLayoutInput input)
+    {
+        lock (_sync)
+        {
+            var room = _snapshot.Rooms.FirstOrDefault(item => item.Id == roomId);
+            if (room is null)
+            {
+                throw new InvalidOperationException("La sala indicada no existe.");
+            }
+
+            var duplicateComputerIds = input.Items
+                .Where(item => item.ComputerId.HasValue)
+                .GroupBy(item => item.ComputerId!.Value)
+                .Where(group => group.Count() > 1)
+                .Select(group => group.Key)
+                .ToList();
+
+            if (duplicateComputerIds.Count > 0)
+            {
+                var duplicateNames = _snapshot.Computers
+                    .Where(computer => duplicateComputerIds.Contains(computer.Id))
+                    .Select(computer => computer.Name)
+                    .OrderBy(name => name)
+                    .ToList();
+                throw new InvalidOperationException($"Cada equipo solo puede estar una vez en el mapa visual. Duplicados detectados: {string.Join(", ", duplicateNames)}.");
+            }
+
+            room.CanvasWidth = Math.Max(640, input.CanvasWidth);
+            room.CanvasHeight = Math.Max(360, input.CanvasHeight);
+            _snapshot.RoomLayoutItems.RemoveAll(item => item.RoomId == roomId);
+
+            var nextId = RepositorySupport.NextId(_snapshot.RoomLayoutItems.Select(item => item.Id));
+            foreach (var layoutItem in input.Items)
+            {
+                _snapshot.RoomLayoutItems.Add(new RoomLayoutItem
+                {
+                    Id = nextId++,
+                    RoomId = roomId,
+                    Label = layoutItem.Label.Trim(),
+                    ItemType = ParseRoomLayoutItemType(layoutItem.ItemType),
+                    X = Math.Max(0, layoutItem.X),
+                    Y = Math.Max(0, layoutItem.Y),
+                    Width = Math.Max(40, layoutItem.Width),
+                    Height = Math.Max(40, layoutItem.Height),
+                    Orientation = NormalizeOrientation(layoutItem.Orientation),
+                    Capacity = NormalizeCapacity(layoutItem.Capacity),
+                    ComputerId = layoutItem.ComputerId
+                });
+            }
+
+            SaveSnapshot();
+            return _snapshot.RoomLayoutItems
+                .Where(item => item.RoomId == roomId)
+                .Select(item => new RoomLayoutItem
+                {
+                    Id = item.Id,
+                    RoomId = item.RoomId,
+                    Label = item.Label,
+                    ItemType = item.ItemType,
+                    X = item.X,
+                    Y = item.Y,
+                    Width = item.Width,
+                    Height = item.Height,
+                    Orientation = item.Orientation,
+                    Capacity = item.Capacity,
+                    ComputerId = item.ComputerId
+                })
+                .ToList();
         }
     }
 
@@ -431,6 +554,16 @@ public sealed class JsonAdminRepository : IAdminRepository
                     Semesters = snapshot.Semesters ?? new List<Semester>(),
                     Users = snapshot.Users ?? new List<UserAccount>(),
                     Computers = snapshot.Computers ?? new List<Computer>(),
+                    Rooms = (snapshot.Rooms ?? new List<Room>()).Select(item => new Room
+                    {
+                        Id = item.Id,
+                        Name = item.Name,
+                        Code = item.Code,
+                        CanvasWidth = item.CanvasWidth > 0 ? item.CanvasWidth : 1200,
+                        CanvasHeight = item.CanvasHeight > 0 ? item.CanvasHeight : 720,
+                        Active = item.Active
+                    }).ToList(),
+                    RoomLayoutItems = snapshot.RoomLayoutItems ?? new List<RoomLayoutItem>(),
                     UsageRecords = snapshot.UsageRecords ?? new List<UsageRecord>(),
                     AuditEntries = snapshot.AuditEntries ?? new List<AuditEntry>()
                 };
@@ -477,6 +610,29 @@ public sealed class JsonAdminRepository : IAdminRepository
                 Status = item.Status,
                 CurrentUsername = item.CurrentUsername,
                 LastSeenUtc = item.LastSeenUtc
+            }).ToList(),
+            Rooms = snapshot.Rooms.Select(item => new Room
+            {
+                Id = item.Id,
+                Name = item.Name,
+                Code = item.Code,
+                CanvasWidth = item.CanvasWidth,
+                CanvasHeight = item.CanvasHeight,
+                Active = item.Active
+            }).ToList(),
+            RoomLayoutItems = snapshot.RoomLayoutItems.Select(item => new RoomLayoutItem
+            {
+                Id = item.Id,
+                RoomId = item.RoomId,
+                Label = item.Label,
+                ItemType = item.ItemType,
+                X = item.X,
+                Y = item.Y,
+                Width = item.Width,
+                Height = item.Height,
+                Orientation = item.Orientation,
+                Capacity = item.Capacity,
+                ComputerId = item.ComputerId
             }).ToList(),
             UsageRecords = snapshot.UsageRecords.Select(item => new UsageRecord
             {
@@ -525,5 +681,22 @@ public sealed class JsonAdminRepository : IAdminRepository
         var semester = new Semester { Id = RepositorySupport.NextId(_snapshot.Semesters.Select(item => item.Id)), Name = normalized, Active = true };
         _snapshot.Semesters.Add(semester);
         return semester.Id;
+    }
+
+    private static RoomLayoutItemType ParseRoomLayoutItemType(string? value)
+    {
+        return Enum.TryParse<RoomLayoutItemType>(value, true, out var parsed)
+            ? parsed
+            : RoomLayoutItemType.Computer;
+    }
+
+    private static string NormalizeOrientation(string? value)
+    {
+        return string.Equals(value, "Vertical", StringComparison.OrdinalIgnoreCase) ? "Vertical" : "Horizontal";
+    }
+
+    private static int NormalizeCapacity(int value)
+    {
+        return Math.Clamp(value, 1, 6);
     }
 }

@@ -11,6 +11,7 @@ public interface IDatabaseConfigurationService
     DatabaseConfigurationResponse GetConfiguration();
     Task<DatabaseConfigurationResult> TestConnectionAsync(DatabaseConfigurationInput input);
     Task<DatabaseConfigurationResult> SaveConfigurationAsync(DatabaseConfigurationInput input);
+    Task<DatabaseConfigurationResult> ApplySchemaAsync(DatabaseConfigurationInput input);
 }
 
 public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
@@ -107,6 +108,33 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
             Message = "Configuracion guardada. Reinicia el contenedor para aplicar el cambio de repositorio.",
             RequiresRestart = true
         };
+    }
+
+    public async Task<DatabaseConfigurationResult> ApplySchemaAsync(DatabaseConfigurationInput input)
+    {
+        try
+        {
+            var effectiveInput = ResolvePassword(input);
+            await using var connection = CreateConnection(effectiveInput);
+            await connection.OpenAsync();
+            DatabaseSchemaManager.ApplySchema(connection, NormalizeProvider(effectiveInput.Provider).Equals("PostgreSql", StringComparison.OrdinalIgnoreCase));
+
+            return new DatabaseConfigurationResult
+            {
+                Success = true,
+                Message = "Tablas y columnas adicionales de OpenCredential AdminWeb verificadas y ajustadas correctamente.",
+                RequiresRestart = false
+            };
+        }
+        catch (Exception exception)
+        {
+            return new DatabaseConfigurationResult
+            {
+                Success = false,
+                Message = $"No fue posible ajustar el esquema: {exception.Message}",
+                RequiresRestart = false
+            };
+        }
     }
 
     private RuntimeDatabaseSetup? LoadRuntimeSetup()

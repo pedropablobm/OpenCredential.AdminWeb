@@ -10,6 +10,8 @@ namespace OpenCredential.AdminWeb.Services;
 
 public sealed class SqlAdminRepository : IAdminRepository
 {
+    private static readonly TimeSpan HeartbeatFreshThreshold = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan HeartbeatStaleThreshold = TimeSpan.FromMinutes(10);
     private readonly DatabaseOptions _options;
     private readonly DbProviderFactory _factory;
     private readonly bool _isPostgreSql;
@@ -36,7 +38,8 @@ public sealed class SqlAdminRepository : IAdminRepository
     public AdminSnapshot GetSnapshot()
     {
         using var connection = OpenConnection();
-        SyncComputersFromLoginSessions(connection);
+        var latestSessions = LoadLatestLoginSessions(connection);
+        EnsureComputersDiscoveredFromSessions(connection, latestSessions);
 
         var careers = new List<Career>();
         using (var command = CreateCommand(connection, $"SELECT id, name, status FROM {Quote("careers")} ORDER BY name"))
@@ -111,6 +114,54 @@ public sealed class SqlAdminRepository : IAdminRepository
             }
         }
 
+        var computedComputers = BuildComputedComputerStates(computers, latestSessions);
+        ApplyComputedStatesToLegacyComputers(computers, computedComputers);
+
+        var rooms = new List<Room>();
+        if (TableExists(connection, "rooms"))
+        {
+            using var roomCommand = CreateCommand(connection, $"SELECT id, name, code, canvas_width, canvas_height, status FROM {Quote("rooms")} ORDER BY name");
+            using var roomReader = roomCommand.ExecuteReader();
+            while (roomReader.Read())
+            {
+                rooms.Add(new Room
+                {
+                    Id = roomReader.GetInt32(0),
+                    Name = roomReader.GetString(1),
+                    Code = roomReader.GetString(2),
+                    CanvasWidth = roomReader.GetInt32(3),
+                    CanvasHeight = roomReader.GetInt32(4),
+                    Active = ReadIntAsBool(roomReader, 5)
+                });
+            }
+        }
+
+        var roomLayoutItems = new List<RoomLayoutItem>();
+        if (TableExists(connection, "room_positions"))
+        {
+            using var positionCommand = CreateCommand(connection, $"SELECT id, room_id, label, item_type, pos_x, pos_y, item_width, item_height, item_orientation, seat_capacity, computer_id, row_number, column_number FROM {Quote("room_positions")} ORDER BY room_id, pos_y, pos_x, id");
+            using var positionReader = positionCommand.ExecuteReader();
+            while (positionReader.Read())
+            {
+                var fallbackRow = positionReader.IsDBNull(11) ? 1 : positionReader.GetInt32(11);
+                var fallbackColumn = positionReader.IsDBNull(12) ? 1 : positionReader.GetInt32(12);
+                roomLayoutItems.Add(new RoomLayoutItem
+                {
+                    Id = positionReader.GetInt32(0),
+                    RoomId = positionReader.GetInt32(1),
+                    Label = positionReader.GetString(2),
+                    ItemType = ParseRoomLayoutItemType(positionReader.IsDBNull(3) ? null : positionReader.GetString(3)),
+                    X = positionReader.IsDBNull(4) ? (fallbackColumn - 1) * 160 : positionReader.GetInt32(4),
+                    Y = positionReader.IsDBNull(5) ? (fallbackRow - 1) * 140 : positionReader.GetInt32(5),
+                    Width = positionReader.IsDBNull(6) ? 120 : positionReader.GetInt32(6),
+                    Height = positionReader.IsDBNull(7) ? 110 : positionReader.GetInt32(7),
+                    Orientation = NormalizeOrientation(positionReader.IsDBNull(8) ? null : positionReader.GetString(8)),
+                    Capacity = NormalizeCapacity(positionReader.IsDBNull(9) ? 1 : positionReader.GetInt32(9)),
+                    ComputerId = positionReader.IsDBNull(10) ? null : positionReader.GetInt32(10)
+                });
+            }
+        }
+
         var usageRecords = new List<UsageRecord>();
         using (var command = CreateCommand(connection, $"SELECT id, user_id, computer_id, start_utc, end_utc FROM {Quote("usage_records")} ORDER BY start_utc DESC"))
         using (var reader = command.ExecuteReader())
@@ -134,6 +185,9 @@ public sealed class SqlAdminRepository : IAdminRepository
             Semesters = semesters,
             Users = users,
             Computers = computers,
+            ComputedComputers = computedComputers,
+            Rooms = rooms,
+            RoomLayoutItems = roomLayoutItems,
             UsageRecords = usageRecords,
             AuditEntries = GetAuditEntries(50)
         };
@@ -318,7 +372,150 @@ public sealed class SqlAdminRepository : IAdminRepository
     public bool DeleteComputer(int id)
     {
         ExecuteNonQuery($"DELETE FROM {Quote("usage_records")} WHERE computer_id = @id", ("@id", id));
+        ExecuteNonQuery($"UPDATE {Quote("room_positions")} SET computer_id = NULL WHERE computer_id = @id", ("@id", id));
         return ExecuteNonQuery($"DELETE FROM {Quote("computers")} WHERE id = @id", ("@id", id)) > 0;
+    }
+
+    public Room CreateRoom(RoomInput input)
+    {
+        var id = NextId("rooms");
+        ExecuteNonQuery(
+            $"INSERT INTO {Quote("rooms")} (id, name, code, canvas_width, canvas_height, status) VALUES (@id, @name, @code, @canvasWidth, @canvasHeight, @status)",
+            ("@id", id),
+            ("@name", input.Name.Trim()),
+            ("@code", input.Code.Trim()),
+            ("@canvasWidth", Math.Max(640, input.CanvasWidth)),
+            ("@canvasHeight", Math.Max(360, input.CanvasHeight)),
+            ("@status", ToStatus(input.Active)));
+
+        return new Room
+        {
+            Id = id,
+            Name = input.Name.Trim(),
+            Code = input.Code.Trim(),
+            CanvasWidth = Math.Max(640, input.CanvasWidth),
+            CanvasHeight = Math.Max(360, input.CanvasHeight),
+            Active = input.Active
+        };
+    }
+
+    public Room? UpdateRoom(int id, RoomInput input)
+    {
+        var affected = ExecuteNonQuery(
+            $"UPDATE {Quote("rooms")} SET name = @name, code = @code, canvas_width = @canvasWidth, canvas_height = @canvasHeight, status = @status WHERE id = @id",
+            ("@id", id),
+            ("@name", input.Name.Trim()),
+            ("@code", input.Code.Trim()),
+            ("@canvasWidth", Math.Max(640, input.CanvasWidth)),
+            ("@canvasHeight", Math.Max(360, input.CanvasHeight)),
+            ("@status", ToStatus(input.Active)));
+
+        return affected == 0
+            ? null
+            : new Room
+            {
+                Id = id,
+                Name = input.Name.Trim(),
+                Code = input.Code.Trim(),
+                CanvasWidth = Math.Max(640, input.CanvasWidth),
+                CanvasHeight = Math.Max(360, input.CanvasHeight),
+                Active = input.Active
+            };
+    }
+
+    public bool DeleteRoom(int id)
+    {
+        ExecuteNonQuery($"DELETE FROM {Quote("room_positions")} WHERE room_id = @id", ("@id", id));
+        return ExecuteNonQuery($"DELETE FROM {Quote("rooms")} WHERE id = @id", ("@id", id)) > 0;
+    }
+
+    public List<RoomLayoutItem> SaveRoomLayout(int roomId, RoomLayoutInput input)
+    {
+        using var connection = OpenConnection();
+        using var existsCommand = CreateCommand(connection, $"SELECT COUNT(*) FROM {Quote("rooms")} WHERE id = @id");
+        AddParameter(existsCommand, "@id", roomId);
+        if (Convert.ToInt32(existsCommand.ExecuteScalar()) == 0)
+        {
+            throw new InvalidOperationException("La sala indicada no existe.");
+        }
+
+        var duplicateComputerIds = input.Items
+            .Where(item => item.ComputerId.HasValue)
+            .GroupBy(item => item.ComputerId!.Value)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToList();
+
+        if (duplicateComputerIds.Count > 0)
+        {
+            var duplicateNames = GetSnapshot().Computers
+                .Where(computer => duplicateComputerIds.Contains(computer.Id))
+                .Select(computer => computer.Name)
+                .OrderBy(name => name)
+                .ToList();
+            throw new InvalidOperationException($"Cada equipo solo puede estar una vez en el mapa visual. Duplicados detectados: {string.Join(", ", duplicateNames)}.");
+        }
+
+        using (var updateRoom = CreateCommand(connection, $"UPDATE {Quote("rooms")} SET canvas_width = @canvasWidth, canvas_height = @canvasHeight WHERE id = @id"))
+        {
+            AddParameter(updateRoom, "@id", roomId);
+            AddParameter(updateRoom, "@canvasWidth", Math.Max(640, input.CanvasWidth));
+            AddParameter(updateRoom, "@canvasHeight", Math.Max(360, input.CanvasHeight));
+            updateRoom.ExecuteNonQuery();
+        }
+
+        using (var deletePositions = CreateCommand(connection, $"DELETE FROM {Quote("room_positions")} WHERE room_id = @roomId"))
+        {
+            AddParameter(deletePositions, "@roomId", roomId);
+            deletePositions.ExecuteNonQuery();
+        }
+
+        var nextId = NextId(connection, "room_positions");
+        foreach (var item in input.Items.OrderBy(layoutItem => layoutItem.Y).ThenBy(layoutItem => layoutItem.X))
+        {
+            var rowNumber = Math.Max(1, (int)Math.Floor(Math.Max(0, item.Y) / 40.0) + 1);
+            var columnNumber = Math.Max(1, (int)Math.Floor(Math.Max(0, item.X) / 40.0) + 1);
+            using var insertPosition = CreateCommand(connection,
+                $"INSERT INTO {Quote("room_positions")} (id, room_id, label, item_type, pos_x, pos_y, item_width, item_height, item_orientation, seat_capacity, computer_id, row_number, column_number) VALUES (@id, @roomId, @label, @itemType, @x, @y, @width, @height, @orientation, @capacity, @computerId, @rowNumber, @columnNumber)");
+            AddParameter(insertPosition, "@id", nextId++);
+            AddParameter(insertPosition, "@roomId", roomId);
+            AddParameter(insertPosition, "@label", item.Label.Trim());
+            AddParameter(insertPosition, "@itemType", ParseRoomLayoutItemType(item.ItemType).ToString());
+            AddParameter(insertPosition, "@x", Math.Max(0, item.X));
+            AddParameter(insertPosition, "@y", Math.Max(0, item.Y));
+            AddParameter(insertPosition, "@width", Math.Max(40, item.Width));
+            AddParameter(insertPosition, "@height", Math.Max(40, item.Height));
+            AddParameter(insertPosition, "@orientation", NormalizeOrientation(item.Orientation));
+            AddParameter(insertPosition, "@capacity", NormalizeCapacity(item.Capacity));
+            AddParameter(insertPosition, "@computerId", (object?)item.ComputerId ?? DBNull.Value);
+            AddParameter(insertPosition, "@rowNumber", rowNumber);
+            AddParameter(insertPosition, "@columnNumber", columnNumber);
+            insertPosition.ExecuteNonQuery();
+        }
+
+        var saved = new List<RoomLayoutItem>();
+        using var loadPositions = CreateCommand(connection, $"SELECT id, room_id, label, item_type, pos_x, pos_y, item_width, item_height, item_orientation, seat_capacity, computer_id FROM {Quote("room_positions")} WHERE room_id = @roomId ORDER BY pos_y, pos_x, id");
+        AddParameter(loadPositions, "@roomId", roomId);
+        using var reader = loadPositions.ExecuteReader();
+        while (reader.Read())
+        {
+            saved.Add(new RoomLayoutItem
+            {
+                Id = reader.GetInt32(0),
+                RoomId = reader.GetInt32(1),
+                Label = reader.GetString(2),
+                ItemType = ParseRoomLayoutItemType(reader.IsDBNull(3) ? null : reader.GetString(3)),
+                X = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+                Y = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
+                Width = reader.IsDBNull(6) ? 120 : reader.GetInt32(6),
+                Height = reader.IsDBNull(7) ? 110 : reader.GetInt32(7),
+                Orientation = NormalizeOrientation(reader.IsDBNull(8) ? null : reader.GetString(8)),
+                Capacity = NormalizeCapacity(reader.IsDBNull(9) ? 1 : reader.GetInt32(9)),
+                ComputerId = reader.IsDBNull(10) ? null : reader.GetInt32(10)
+            });
+        }
+
+        return saved;
     }
 
     public UserAccount CreateUser(UserInput input)
@@ -508,11 +705,7 @@ public sealed class SqlAdminRepository : IAdminRepository
     private void EnsureSchema()
     {
         using var connection = OpenConnection();
-        foreach (var sql in GetSchemaStatements())
-        {
-            using var command = CreateCommand(connection, sql);
-            command.ExecuteNonQuery();
-        }
+        DatabaseSchemaManager.ApplySchema(connection, _isPostgreSql);
     }
 
     private void SeedIfEmpty()
@@ -556,6 +749,22 @@ public sealed class SqlAdminRepository : IAdminRepository
                 ("@id", computer.Id), ("@name", computer.Name), ("@location", computer.Location), ("@inventory", computer.InventoryTag),
                 ("@ip", (object?)computer.IpAddress ?? DBNull.Value),
                 ("@status", computer.Status.ToString()), ("@current", (object?)computer.CurrentUsername ?? DBNull.Value), ("@lastSeen", computer.LastSeenUtc));
+        }
+
+        foreach (var room in snapshot.Rooms)
+        {
+            ExecuteNonQuery(
+                $"INSERT INTO {Quote("rooms")} (id, name, code, canvas_width, canvas_height, status) VALUES (@id, @name, @code, @canvasWidth, @canvasHeight, @status)",
+                ("@id", room.Id), ("@name", room.Name), ("@code", room.Code), ("@canvasWidth", room.CanvasWidth), ("@canvasHeight", room.CanvasHeight), ("@status", ToStatus(room.Active)));
+        }
+
+        foreach (var item in snapshot.RoomLayoutItems)
+        {
+            var rowNumber = Math.Max(1, (int)Math.Floor(Math.Max(0, item.Y) / 40.0) + 1);
+            var columnNumber = Math.Max(1, (int)Math.Floor(Math.Max(0, item.X) / 40.0) + 1);
+            ExecuteNonQuery(
+                $"INSERT INTO {Quote("room_positions")} (id, room_id, label, item_type, pos_x, pos_y, item_width, item_height, computer_id, row_number, column_number) VALUES (@id, @roomId, @label, @itemType, @x, @y, @width, @height, @computerId, @rowNumber, @columnNumber)",
+                ("@id", item.Id), ("@roomId", item.RoomId), ("@label", item.Label), ("@itemType", item.ItemType.ToString()), ("@x", item.X), ("@y", item.Y), ("@width", item.Width), ("@height", item.Height), ("@computerId", (object?)item.ComputerId ?? DBNull.Value), ("@rowNumber", rowNumber), ("@columnNumber", columnNumber));
         }
 
         foreach (var usage in snapshot.UsageRecords)
@@ -652,199 +861,67 @@ public sealed class SqlAdminRepository : IAdminRepository
             : $"`{identifier.Replace("`", "``")}`";
     }
 
-    private IEnumerable<string> GetSchemaStatements()
-    {
-        if (_isPostgreSql)
-        {
-            return new[]
-            {
-                """
-                CREATE TABLE IF NOT EXISTS "careers" (
-                  "id" INT PRIMARY KEY,
-                  "name" VARCHAR(255) NOT NULL,
-                  "status" INT NOT NULL DEFAULT 1
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS "levels" (
-                  "id" INT PRIMARY KEY,
-                  "name" VARCHAR(100) NOT NULL,
-                  "status" INT NOT NULL DEFAULT 1
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS "users" (
-                  "id" INT NOT NULL,
-                  "username" VARCHAR(50) NOT NULL,
-                  "first_name" VARCHAR(100),
-                  "last_name" VARCHAR(100),
-                  "document_id" VARCHAR(15),
-                  "email" VARCHAR(200),
-                  "status" INT NOT NULL DEFAULT 1,
-                  "career_id" INT NULL,
-                  "level_id" INT NULL,
-                  "hash_method" TEXT NOT NULL DEFAULT 'NONE',
-                  "password_hash" TEXT NULL,
-                  "failed_attempts" INT NOT NULL DEFAULT 0,
-                  "locked_until" TIMESTAMP NULL,
-                  "last_attempt_at" TIMESTAMP NULL,
-                  CONSTRAINT "pk_users_id" PRIMARY KEY ("id"),
-                  CONSTRAINT "uq_users_username" UNIQUE ("username")
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS "computers" (
-                  "id" INT PRIMARY KEY,
-                  "name" VARCHAR(128) NOT NULL,
-                  "location" VARCHAR(150) NOT NULL,
-                  "inventory_tag" VARCHAR(80) NOT NULL,
-                  "ip_address" VARCHAR(45) NULL,
-                  "status" VARCHAR(20) NOT NULL,
-                  "current_username" VARCHAR(128) NULL,
-                  "last_seen_utc" TIMESTAMP NOT NULL
-                )
-                """,
-                """
-                ALTER TABLE "computers" ADD COLUMN IF NOT EXISTS "ip_address" VARCHAR(45) NULL
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS "usage_records" (
-                  "id" INT PRIMARY KEY,
-                  "user_id" INT NOT NULL,
-                  "computer_id" INT NOT NULL,
-                  "start_utc" TIMESTAMP NOT NULL,
-                  "end_utc" TIMESTAMP NOT NULL
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS "admin_audit_log" (
-                  "id" INT PRIMARY KEY,
-                  "actor_username" VARCHAR(100) NOT NULL,
-                  "action" VARCHAR(60) NOT NULL,
-                  "entity_type" VARCHAR(80) NOT NULL,
-                  "entity_key" VARCHAR(120) NOT NULL,
-                  "summary" TEXT NOT NULL,
-                  "remote_ip" VARCHAR(64) NULL,
-                  "created_utc" TIMESTAMP NOT NULL
-                )
-                """
-            };
-        }
-
-        return new[]
-        {
-            """
-            CREATE TABLE IF NOT EXISTS `careers` (
-              `id` INT NOT NULL,
-              `name` VARCHAR(255) NOT NULL,
-              `status` INT NOT NULL DEFAULT 1,
-              PRIMARY KEY (`id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS `levels` (
-              `id` INT NOT NULL,
-              `name` VARCHAR(100) NOT NULL,
-              `status` INT NOT NULL DEFAULT 1,
-              PRIMARY KEY (`id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS `users` (
-              `id` INT NOT NULL,
-              `username` VARCHAR(50) NOT NULL,
-              `first_name` VARCHAR(100) NULL,
-              `last_name` VARCHAR(100) NULL,
-              `document_id` VARCHAR(15) NULL,
-              `email` VARCHAR(200) NULL,
-              `status` INT NOT NULL DEFAULT 1,
-              `career_id` INT NULL,
-              `level_id` INT NULL,
-              `hash_method` TEXT NOT NULL,
-              `password_hash` TEXT NULL,
-              `failed_attempts` INT NOT NULL DEFAULT 0,
-              `locked_until` DATETIME NULL,
-              `last_attempt_at` DATETIME NULL,
-              PRIMARY KEY (`id`),
-              UNIQUE KEY `uq_users_username` (`username`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS `computers` (
-              `id` INT NOT NULL,
-              `name` VARCHAR(128) NOT NULL,
-              `location` VARCHAR(150) NOT NULL,
-              `inventory_tag` VARCHAR(80) NOT NULL,
-              `ip_address` VARCHAR(45) NULL,
-              `status` VARCHAR(20) NOT NULL,
-              `current_username` VARCHAR(128) NULL,
-              `last_seen_utc` DATETIME NOT NULL,
-              PRIMARY KEY (`id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """,
-            """
-            ALTER TABLE `computers` ADD COLUMN IF NOT EXISTS `ip_address` VARCHAR(45) NULL
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS `usage_records` (
-              `id` INT NOT NULL,
-              `user_id` INT NOT NULL,
-              `computer_id` INT NOT NULL,
-              `start_utc` DATETIME NOT NULL,
-              `end_utc` DATETIME NOT NULL,
-              PRIMARY KEY (`id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS `admin_audit_log` (
-              `id` INT NOT NULL,
-              `actor_username` VARCHAR(100) NOT NULL,
-              `action` VARCHAR(60) NOT NULL,
-              `entity_type` VARCHAR(80) NOT NULL,
-              `entity_key` VARCHAR(120) NOT NULL,
-              `summary` TEXT NOT NULL,
-              `remote_ip` VARCHAR(64) NULL,
-              `created_utc` DATETIME NOT NULL,
-              PRIMARY KEY (`id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """
-        };
-    }
-
-    private void SyncComputersFromLoginSessions(DbConnection connection)
+    private List<LoginSessionSnapshot> LoadLatestLoginSessions(DbConnection connection)
     {
         if (!TableExists(connection, "login_sessions"))
         {
-            return;
+            return [];
         }
 
-        var activeSessions = new List<(string Username, string Machine, string IpAddress, DateTime LoginStamp)>();
-        using (var command = CreateCommand(connection, $"SELECT username, machine, ipaddress, loginstamp FROM {Quote("login_sessions")} WHERE logoutstamp IS NULL"))
+        var latestSessions = new List<LoginSessionSnapshot>();
+        var latestByKey = new Dictionary<string, LoginSessionSnapshot>(StringComparer.OrdinalIgnoreCase);
+        using (var command = CreateCommand(connection, $"SELECT dbid, loginstamp, logoutstamp, username, machine, ipaddress, client_session_id, windows_session_id, session_state, last_heartbeat_at, session_end_reason FROM {Quote("login_sessions")} ORDER BY COALESCE(last_heartbeat_at, loginstamp) DESC, loginstamp DESC, dbid DESC"))
         using (var reader = command.ExecuteReader())
         {
             while (reader.Read())
             {
-                activeSessions.Add((
-                    reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
-                    reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
-                    reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
-                    reader.GetDateTime(3)));
+                var session = new LoginSessionSnapshot
+                {
+                    DbId = ReadFlexibleInt32(reader, 0) ?? 0,
+                    LoginStamp = ReadFlexibleDateTimeUtc(reader, 1) ?? DateTime.UtcNow,
+                    LogoutStamp = ReadFlexibleDateTimeUtc(reader, 2),
+                    Username = ReadFlexibleString(reader, 3),
+                    Machine = ReadFlexibleString(reader, 4),
+                    IpAddress = ReadFlexibleString(reader, 5),
+                    ClientSessionId = ReadFlexibleString(reader, 6),
+                    WindowsSessionId = ReadFlexibleInt32(reader, 7),
+                    SessionState = ReadFlexibleString(reader, 8),
+                    LastHeartbeatAt = ReadFlexibleDateTimeUtc(reader, 9),
+                    SessionEndReason = ReadFlexibleString(reader, 10)
+                };
+
+                var sessionKey = BuildSessionLookupKey(session);
+                if (string.IsNullOrWhiteSpace(sessionKey) || latestByKey.ContainsKey(sessionKey))
+                {
+                    continue;
+                }
+
+                latestByKey[sessionKey] = session;
+                latestSessions.Add(session);
             }
         }
 
-        foreach (var session in activeSessions.Where(item => !string.IsNullOrWhiteSpace(item.Machine)))
+        return latestSessions;
+    }
+
+    private void EnsureComputersDiscoveredFromSessions(DbConnection connection, IReadOnlyCollection<LoginSessionSnapshot> latestSessions)
+    {
+        var discoveryCutoff = DateTime.UtcNow - HeartbeatStaleThreshold;
+        foreach (var session in latestSessions
+                     .Where(item => !string.IsNullOrWhiteSpace(item.Machine))
+                     .Where(item => item.LogoutStamp is null)
+                     .Where(item => !string.Equals(item.SessionState, "ended", StringComparison.OrdinalIgnoreCase))
+                     .Where(item => (item.LastHeartbeatAt ?? item.LoginStamp) >= discoveryCutoff))
         {
-            var existingId = FindComputerId(connection, session.Machine, session.IpAddress);
+            var existingId = FindComputerId(connection, session.Machine!, session.IpAddress);
             if (existingId.HasValue)
             {
                 using var update = CreateCommand(connection,
-                    $"UPDATE {Quote("computers")} SET name = @name, ip_address = @ip, status = @status, current_username = @username, last_seen_utc = @lastSeen WHERE id = @id");
+                    $"UPDATE {Quote("computers")} SET name = @name, ip_address = @ip, last_seen_utc = @lastSeen WHERE id = @id");
                 AddParameter(update, "@id", existingId.Value);
-                AddParameter(update, "@name", session.Machine);
-                AddParameter(update, "@ip", string.IsNullOrWhiteSpace(session.IpAddress) ? DBNull.Value : session.IpAddress);
-                AddParameter(update, "@status", ComputerStatus.InUse.ToString());
-                AddParameter(update, "@username", string.IsNullOrWhiteSpace(session.Username) ? DBNull.Value : session.Username);
-                AddParameter(update, "@lastSeen", session.LoginStamp.ToUniversalTime());
+                AddParameter(update, "@name", session.Machine!);
+                AddParameter(update, "@ip", string.IsNullOrWhiteSpace(session.IpAddress) ? DBNull.Value : session.IpAddress!);
+                AddParameter(update, "@lastSeen", (object?)(session.LastHeartbeatAt ?? session.LoginStamp) ?? DBNull.Value);
                 update.ExecuteNonQuery();
             }
             else
@@ -852,25 +929,269 @@ public sealed class SqlAdminRepository : IAdminRepository
                 using var insert = CreateCommand(connection,
                     $"INSERT INTO {Quote("computers")} (id, name, location, inventory_tag, ip_address, status, current_username, last_seen_utc) VALUES (@id, @name, @location, @inventory, @ip, @status, @username, @lastSeen)");
                 AddParameter(insert, "@id", NextId(connection, "computers"));
-                AddParameter(insert, "@name", session.Machine);
+                AddParameter(insert, "@name", session.Machine!);
                 AddParameter(insert, "@location", "Detectado por login_sessions");
-                AddParameter(insert, "@inventory", $"AUTO-{session.Machine}");
-                AddParameter(insert, "@ip", string.IsNullOrWhiteSpace(session.IpAddress) ? DBNull.Value : session.IpAddress);
-                AddParameter(insert, "@status", ComputerStatus.InUse.ToString());
-                AddParameter(insert, "@username", string.IsNullOrWhiteSpace(session.Username) ? DBNull.Value : session.Username);
-                AddParameter(insert, "@lastSeen", session.LoginStamp.ToUniversalTime());
+                AddParameter(insert, "@inventory", $"AUTO-{session.Machine!}");
+                AddParameter(insert, "@ip", string.IsNullOrWhiteSpace(session.IpAddress) ? DBNull.Value : session.IpAddress!);
+                AddParameter(insert, "@status", ComputerStatus.Available.ToString());
+                AddParameter(insert, "@username", DBNull.Value);
+                AddParameter(insert, "@lastSeen", (object?)(session.LastHeartbeatAt ?? session.LoginStamp) ?? DBNull.Value);
                 insert.ExecuteNonQuery();
             }
         }
-
-        using var clear = CreateCommand(connection,
-            $"UPDATE {Quote("computers")} SET status = CASE WHEN status = @inUse THEN @available ELSE status END, current_username = CASE WHEN status = @inUse THEN NULL ELSE current_username END WHERE NOT EXISTS (SELECT 1 FROM {Quote("login_sessions")} ls WHERE ls.logoutstamp IS NULL AND (LOWER(ls.machine) = LOWER({Quote("computers")}.name) OR ({Quote("computers")}.ip_address IS NOT NULL AND ls.ipaddress = {Quote("computers")}.ip_address)))");
-        AddParameter(clear, "@inUse", ComputerStatus.InUse.ToString());
-        AddParameter(clear, "@available", ComputerStatus.Available.ToString());
-        clear.ExecuteNonQuery();
     }
 
-    private int? FindComputerId(DbConnection connection, string machine, string ipAddress)
+    private List<ComputedComputerState> BuildComputedComputerStates(IReadOnlyCollection<Computer> computers, IReadOnlyCollection<LoginSessionSnapshot> latestSessions)
+    {
+        var nowUtc = DateTime.UtcNow;
+        var sessionsByMachine = latestSessions
+            .Where(session => !string.IsNullOrWhiteSpace(session.Machine))
+            .GroupBy(session => session.Machine!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var sessionsByIp = latestSessions
+            .Where(session => !string.IsNullOrWhiteSpace(session.IpAddress))
+            .GroupBy(session => session.IpAddress!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+        return computers
+            .Select(computer =>
+            {
+                var matchedSession = TryMatchSessionForComputer(computer, sessionsByMachine, sessionsByIp);
+                return BuildComputedComputerState(computer, matchedSession, nowUtc);
+            })
+            .OrderBy(state => state.ComputerName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private void ApplyComputedStatesToLegacyComputers(List<Computer> computers, IReadOnlyCollection<ComputedComputerState> computedComputers)
+    {
+        var computedById = computedComputers.ToDictionary(item => item.ComputerId);
+        foreach (var computer in computers)
+        {
+            if (!computedById.TryGetValue(computer.Id, out var computed))
+            {
+                continue;
+            }
+
+            computer.Status = MapOperationalToLegacyStatus(computed.OperationalStatus);
+            computer.CurrentUsername = computed.OperationalStatus == OperationalComputerStatus.Orphaned
+                ? null
+                : computed.SessionUsername;
+            computer.LastSeenUtc = computed.LastHeartbeatAt ?? computed.LoginStamp ?? computer.LastSeenUtc;
+        }
+    }
+
+    private LoginSessionSnapshot? TryMatchSessionForComputer(
+        Computer computer,
+        IReadOnlyDictionary<string, LoginSessionSnapshot> sessionsByMachine,
+        IReadOnlyDictionary<string, LoginSessionSnapshot> sessionsByIp)
+    {
+        if (!string.IsNullOrWhiteSpace(computer.Name) && sessionsByMachine.TryGetValue(computer.Name, out var machineSession))
+        {
+            return machineSession;
+        }
+
+        if (!string.IsNullOrWhiteSpace(computer.IpAddress) && sessionsByIp.TryGetValue(computer.IpAddress, out var ipSession))
+        {
+            return ipSession;
+        }
+
+        return null;
+    }
+
+    private ComputedComputerState BuildComputedComputerState(Computer computer, LoginSessionSnapshot? session, DateTime nowUtc)
+    {
+        if (computer.Status == ComputerStatus.Disabled)
+        {
+            return CreateComputedComputerState(
+                computer,
+                session,
+                OperationalComputerStatus.Disabled,
+                "Equipo deshabilitado administrativamente.");
+        }
+
+        if (session is null)
+        {
+            return CreateComputedComputerState(
+                computer,
+                null,
+                OperationalComputerStatus.Available,
+                "No hay sesion vigente asociada al equipo.");
+        }
+
+        if (session.LogoutStamp.HasValue || string.Equals(session.SessionState, "ended", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateComputedComputerState(
+                computer,
+                session,
+                OperationalComputerStatus.Available,
+                "La ultima sesion ya fue cerrada correctamente.");
+        }
+
+        var heartbeatReference = session.LastHeartbeatAt ?? session.LoginStamp;
+        var heartbeatAge = nowUtc - heartbeatReference;
+        var isStale = heartbeatAge > HeartbeatFreshThreshold;
+        var isOrphaned = heartbeatAge > HeartbeatStaleThreshold;
+
+        if (isOrphaned)
+        {
+            var reason = string.IsNullOrWhiteSpace(session.SessionEndReason)
+                ? "Sesion abierta sin heartbeat reciente."
+                : $"Sesion abierta reconciliada o vencida: {session.SessionEndReason}.";
+            return CreateComputedComputerState(
+                computer,
+                session,
+                OperationalComputerStatus.Orphaned,
+                reason,
+                heartbeatAge,
+                isStale: true,
+                isOrphaned: true);
+        }
+
+        var sessionState = (session.SessionState ?? string.Empty).Trim().ToLowerInvariant();
+        var operationalStatus = sessionState switch
+        {
+            "active" => OperationalComputerStatus.Occupied,
+            "locked" => OperationalComputerStatus.Locked,
+            "disconnected" => OperationalComputerStatus.Disconnected,
+            _ => OperationalComputerStatus.Orphaned
+        };
+
+        var statusReason = operationalStatus switch
+        {
+            OperationalComputerStatus.Occupied => "Sesion activa con heartbeat reciente.",
+            OperationalComputerStatus.Locked => "Sesion bloqueada con heartbeat reciente.",
+            OperationalComputerStatus.Disconnected => "Sesion desconectada con heartbeat todavia vigente.",
+            _ => "Estado de sesion no reconocido; requiere revision."
+        };
+
+        return CreateComputedComputerState(
+            computer,
+            session,
+            operationalStatus,
+            statusReason,
+            heartbeatAge,
+            isStale,
+            operationalStatus == OperationalComputerStatus.Orphaned);
+    }
+
+    private ComputedComputerState CreateComputedComputerState(
+        Computer computer,
+        LoginSessionSnapshot? session,
+        OperationalComputerStatus operationalStatus,
+        string statusReason,
+        TimeSpan? heartbeatAge = null,
+        bool isStale = false,
+        bool isOrphaned = false)
+    {
+        var heartbeatSeconds = heartbeatAge.HasValue
+            ? Math.Max(0, (int)Math.Floor(heartbeatAge.Value.TotalSeconds))
+            : (int?)null;
+
+        return new ComputedComputerState
+        {
+            ComputerId = computer.Id,
+            ComputerName = computer.Name,
+            Location = computer.Location,
+            InventoryTag = computer.InventoryTag,
+            IpAddress = computer.IpAddress,
+            AdministrativeStatus = computer.Status,
+            OperationalStatus = operationalStatus,
+            OperationalStatusLabel = RepositorySupport.TranslateOperationalStatus(operationalStatus),
+            StatusReason = statusReason,
+            SessionUsername = CleanOptionalSessionValue(session?.Username),
+            Machine = CleanOptionalSessionValue(session?.Machine),
+            ClientSessionId = CleanOptionalSessionValue(session?.ClientSessionId),
+            WindowsSessionId = session?.WindowsSessionId,
+            SessionState = CleanOptionalSessionValue(session?.SessionState),
+            LoginStamp = session?.LoginStamp,
+            LogoutStamp = session?.LogoutStamp,
+            LastHeartbeatAt = session?.LastHeartbeatAt,
+            SessionEndReason = CleanOptionalSessionValue(session?.SessionEndReason),
+            HeartbeatAgeSeconds = heartbeatSeconds,
+            IsStale = isStale,
+            IsOrphaned = isOrphaned,
+            LastSeenUtc = session?.LastHeartbeatAt ?? session?.LoginStamp ?? computer.LastSeenUtc
+        };
+    }
+
+    private static string? BuildSessionLookupKey(LoginSessionSnapshot session)
+    {
+        if (!string.IsNullOrWhiteSpace(session.Machine))
+        {
+            return $"machine:{session.Machine.Trim().ToLowerInvariant()}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(session.IpAddress))
+        {
+            return $"ip:{session.IpAddress.Trim().ToLowerInvariant()}";
+        }
+
+        return null;
+    }
+
+    private static string? CleanOptionalSessionValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string? ReadFlexibleString(DbDataReader reader, int ordinal)
+    {
+        if (reader.IsDBNull(ordinal))
+        {
+            return null;
+        }
+
+        return Convert.ToString(reader.GetValue(ordinal))?.Trim();
+    }
+
+    private static int? ReadFlexibleInt32(DbDataReader reader, int ordinal)
+    {
+        if (reader.IsDBNull(ordinal))
+        {
+            return null;
+        }
+
+        var value = reader.GetValue(ordinal);
+        return value switch
+        {
+            int intValue => intValue,
+            long longValue => checked((int)longValue),
+            short shortValue => shortValue,
+            byte byteValue => byteValue,
+            _ when int.TryParse(Convert.ToString(value), out var parsed) => parsed,
+            _ => null
+        };
+    }
+
+    private static DateTime? ReadFlexibleDateTimeUtc(DbDataReader reader, int ordinal)
+    {
+        if (reader.IsDBNull(ordinal))
+        {
+            return null;
+        }
+
+        var value = reader.GetValue(ordinal);
+        return value switch
+        {
+            DateTime dateTime => DateTime.SpecifyKind(dateTime, DateTimeKind.Utc),
+            DateTimeOffset offset => offset.UtcDateTime,
+            _ when DateTime.TryParse(Convert.ToString(value), out var parsed) => DateTime.SpecifyKind(parsed, DateTimeKind.Utc),
+            _ => null
+        };
+    }
+
+    private static ComputerStatus MapOperationalToLegacyStatus(OperationalComputerStatus status)
+    {
+        return status switch
+        {
+            OperationalComputerStatus.Disabled => ComputerStatus.Disabled,
+            OperationalComputerStatus.Occupied or OperationalComputerStatus.Locked or OperationalComputerStatus.Disconnected => ComputerStatus.InUse,
+            _ => ComputerStatus.Available
+        };
+    }
+
+    private int? FindComputerId(DbConnection connection, string machine, string? ipAddress)
     {
         using var command = CreateCommand(connection,
             $"SELECT id FROM {Quote("computers")} WHERE LOWER(name) = LOWER(@machine) OR (ip_address IS NOT NULL AND ip_address = @ip) ORDER BY id");
@@ -893,6 +1214,23 @@ public sealed class SqlAdminRepository : IAdminRepository
     private static bool ReadIntAsBool(IDataRecord record, int ordinal)
     {
         return !record.IsDBNull(ordinal) && Convert.ToInt32(record.GetValue(ordinal)) == 1;
+    }
+
+    private static RoomLayoutItemType ParseRoomLayoutItemType(string? value)
+    {
+        return Enum.TryParse<RoomLayoutItemType>(value, true, out var parsed)
+            ? parsed
+            : RoomLayoutItemType.Computer;
+    }
+
+    private static string NormalizeOrientation(string? value)
+    {
+        return string.Equals(value, "Vertical", StringComparison.OrdinalIgnoreCase) ? "Vertical" : "Horizontal";
+    }
+
+    private static int NormalizeCapacity(int value)
+    {
+        return Math.Clamp(value, 1, 6);
     }
 
     private static int ToStatus(bool active) => active ? 1 : 0;

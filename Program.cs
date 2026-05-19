@@ -257,6 +257,17 @@ protectedApi.MapPost("/configuration/database/test", async (DatabaseConfiguratio
     return Results.Ok(await configurationService.TestConnectionAsync(input));
 }).RequireAuthorization("CanManageSettings");
 
+protectedApi.MapPost("/configuration/database/schema", async (DatabaseConfigurationInput input, HttpContext context, IDatabaseConfigurationService configurationService) =>
+{
+    var result = await configurationService.ApplySchemaAsync(input);
+    if (result.Success)
+    {
+        TryAudit(context, GetActor(context), "ApplyDatabaseSchema", "Configuration", input.Provider, $"Ajuste manual de tablas auxiliares para {input.Provider} en {input.Host}:{input.Port}.");
+    }
+
+    return Results.Ok(result);
+}).RequireAuthorization("CanManageSettings");
+
 protectedApi.MapPut("/configuration/database", async (DatabaseConfigurationInput input, HttpContext context, IDatabaseConfigurationService configurationService) =>
 {
     var result = await configurationService.SaveConfigurationAsync(input);
@@ -373,6 +384,49 @@ protectedApi.MapDelete("/computers/{id:int}", (int id, HttpContext context, IAdm
     }
 
     return Results.NotFound();
+}).RequireAuthorization("CanManageComputers");
+
+protectedApi.MapPost("/rooms", (RoomInput input, HttpContext context, IAdminRepository repository) =>
+{
+    var room = repository.CreateRoom(input);
+    Audit(context, repository, "CreateRoom", "Room", room.Id.ToString(), $"Creacion de sala {room.Name}.");
+    return Results.Ok(room);
+}).RequireAuthorization("CanManageComputers");
+
+protectedApi.MapPut("/rooms/{id:int}", (int id, RoomInput input, HttpContext context, IAdminRepository repository) =>
+{
+    if (repository.UpdateRoom(id, input) is { } room)
+    {
+        Audit(context, repository, "UpdateRoom", "Room", id.ToString(), $"Actualizacion de sala {room.Name}.");
+        return Results.Ok(room);
+    }
+
+    return Results.NotFound();
+}).RequireAuthorization("CanManageComputers");
+
+protectedApi.MapDelete("/rooms/{id:int}", (int id, HttpContext context, IAdminRepository repository) =>
+{
+    if (repository.DeleteRoom(id))
+    {
+        Audit(context, repository, "DeleteRoom", "Room", id.ToString(), $"Eliminacion de sala {id}.");
+        return Results.NoContent();
+    }
+
+    return Results.NotFound();
+}).RequireAuthorization("CanManageComputers");
+
+protectedApi.MapPut("/rooms/{id:int}/layout", (int id, RoomLayoutInput input, HttpContext context, IAdminRepository repository) =>
+{
+    try
+    {
+        var positions = repository.SaveRoomLayout(id, input);
+        Audit(context, repository, "UpdateRoomLayout", "Room", id.ToString(), $"Actualizacion del mapa visual de la sala {id} con {positions.Count} puestos.");
+        return Results.Ok(positions);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
 }).RequireAuthorization("CanManageComputers");
 
 protectedApi.MapPost("/users", (UserInput input, HttpContext context, IAdminRepository repository) =>

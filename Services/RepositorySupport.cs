@@ -35,16 +35,22 @@ internal static class RepositorySupport
     {
         var untilUtc = DateTime.UtcNow;
         var fromUtc = untilUtc.AddDays(-Math.Max(1, rangeDays));
+        var computedComputers = snapshot.ComputedComputers.Count > 0
+            ? snapshot.ComputedComputers
+            : snapshot.Computers.Select(CreateFallbackComputedState).ToList();
 
         var filteredUsers = snapshot.Users
             .Where(user => !careerId.HasValue || user.CareerId == careerId)
             .Where(user => !semesterId.HasValue || user.SemesterId == semesterId)
             .ToDictionary(user => user.Id);
 
-        var computerCards = snapshot.Computers
-            .Where(computer => string.IsNullOrWhiteSpace(status) || computer.Status.ToString().Equals(status, StringComparison.OrdinalIgnoreCase))
+        var computerCards = computedComputers
+            .Where(computer =>
+                string.IsNullOrWhiteSpace(status) ||
+                computer.OperationalStatus.ToString().Equals(status, StringComparison.OrdinalIgnoreCase) ||
+                computer.AdministrativeStatus.ToString().Equals(status, StringComparison.OrdinalIgnoreCase))
             .Select(ToComputerCard)
-            .OrderBy(card => card.Name)
+            .OrderBy(card => card.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         var filteredUsage = snapshot.UsageRecords
@@ -58,16 +64,28 @@ internal static class RepositorySupport
             {
                 TotalUsers = snapshot.Users.Count,
                 ActiveUsers = snapshot.Users.Count(user => user.Active),
-                AvailableComputers = snapshot.Computers.Count(computer => computer.Status == ComputerStatus.Available),
-                InUseComputers = snapshot.Computers.Count(computer => computer.Status == ComputerStatus.InUse),
-                DisabledComputers = snapshot.Computers.Count(computer => computer.Status == ComputerStatus.Disabled),
+                AvailableComputers = computedComputers.Count(computer => computer.OperationalStatus == OperationalComputerStatus.Available),
+                InUseComputers = computedComputers.Count(computer =>
+                    computer.OperationalStatus is OperationalComputerStatus.Occupied or OperationalComputerStatus.Locked or OperationalComputerStatus.Disconnected),
+                OccupiedComputers = computedComputers.Count(computer => computer.OperationalStatus == OperationalComputerStatus.Occupied),
+                LockedComputers = computedComputers.Count(computer => computer.OperationalStatus == OperationalComputerStatus.Locked),
+                DisconnectedComputers = computedComputers.Count(computer => computer.OperationalStatus == OperationalComputerStatus.Disconnected),
+                OrphanedComputers = computedComputers.Count(computer => computer.OperationalStatus == OperationalComputerStatus.Orphaned),
+                DisabledComputers = computedComputers.Count(computer => computer.OperationalStatus == OperationalComputerStatus.Disabled),
                 HoursInRange = Math.Round(filteredUsage.Sum(GetDurationHours), 1)
             },
-            EquipmentStatus = Enum.GetValues<ComputerStatus>()
+            EquipmentStatus = new List<ChartPoint>
+                {
+                    new() { Label = TranslateStatus(ComputerStatus.Available), Value = computedComputers.Count(computer => computer.OperationalStatus == OperationalComputerStatus.Available) },
+                    new() { Label = TranslateStatus(ComputerStatus.InUse), Value = computedComputers.Count(computer => computer.OperationalStatus is OperationalComputerStatus.Occupied or OperationalComputerStatus.Locked or OperationalComputerStatus.Disconnected) },
+                    new() { Label = TranslateStatus(ComputerStatus.Disabled), Value = computedComputers.Count(computer => computer.OperationalStatus == OperationalComputerStatus.Disabled) }
+                }
+                .ToList(),
+            OperationalStatus = Enum.GetValues<OperationalComputerStatus>()
                 .Select(value => new ChartPoint
                 {
-                    Label = TranslateStatus(value),
-                    Value = snapshot.Computers.Count(computer => computer.Status == value)
+                    Label = TranslateOperationalStatus(value),
+                    Value = computedComputers.Count(computer => computer.OperationalStatus == value)
                 })
                 .ToList(),
             UsageByCareer = snapshot.Careers
@@ -105,7 +123,13 @@ internal static class RepositorySupport
                     };
                 })
                 .ToList(),
-            ComputerCards = computerCards
+            ComputerCards = computerCards,
+            SessionAlerts = computedComputers
+                .Where(computer => computer.OperationalStatus is OperationalComputerStatus.Disconnected or OperationalComputerStatus.Orphaned)
+                .OrderByDescending(computer => computer.LastHeartbeatAt ?? computer.LoginStamp ?? computer.LastSeenUtc)
+                .ThenBy(computer => computer.ComputerName, StringComparer.OrdinalIgnoreCase)
+                .Take(10)
+                .ToList()
         };
     }
 
@@ -114,18 +138,24 @@ internal static class RepositorySupport
         return Math.Max(0, (record.EndUtc - record.StartUtc).TotalHours);
     }
 
-    public static ComputerStatusCard ToComputerCard(Computer computer)
+    public static ComputerStatusCard ToComputerCard(ComputedComputerState computer)
     {
         return new ComputerStatusCard
         {
-            Id = computer.Id,
-            Name = computer.Name,
+            Id = computer.ComputerId,
+            Name = computer.ComputerName,
             Location = computer.Location,
             InventoryTag = computer.InventoryTag,
             IpAddress = computer.IpAddress,
-            Status = TranslateStatus(computer.Status),
-            CurrentUsername = computer.CurrentUsername,
-            LastSeenLabel = computer.LastSeenUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture)
+            Status = computer.OperationalStatusLabel,
+            CurrentUsername = computer.SessionUsername,
+            LastSeenLabel = computer.LastSeenUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture),
+            OperationalStatus = computer.OperationalStatus.ToString(),
+            SessionState = computer.SessionState,
+            SessionEndReason = computer.SessionEndReason,
+            LastHeartbeatLabel = computer.LastHeartbeatAt?.ToLocalTime().ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture),
+            HeartbeatAgeSeconds = computer.HeartbeatAgeSeconds,
+            IsOrphaned = computer.IsOrphaned
         };
     }
 
@@ -137,6 +167,49 @@ internal static class RepositorySupport
             ComputerStatus.InUse => "En uso",
             ComputerStatus.Disabled => "Deshabilitado",
             _ => status.ToString()
+        };
+    }
+
+    public static string TranslateOperationalStatus(OperationalComputerStatus status)
+    {
+        return status switch
+        {
+            OperationalComputerStatus.Available => "Disponible",
+            OperationalComputerStatus.Occupied => "Ocupado",
+            OperationalComputerStatus.Locked => "Bloqueado",
+            OperationalComputerStatus.Disconnected => "Desconectado",
+            OperationalComputerStatus.Orphaned => "Sesion huerfana",
+            OperationalComputerStatus.Disabled => "Deshabilitado",
+            _ => status.ToString()
+        };
+    }
+
+    public static ComputedComputerState CreateFallbackComputedState(Computer computer)
+    {
+        var operationalStatus = computer.Status switch
+        {
+            ComputerStatus.Disabled => OperationalComputerStatus.Disabled,
+            ComputerStatus.InUse => OperationalComputerStatus.Occupied,
+            _ => OperationalComputerStatus.Available
+        };
+
+        return new ComputedComputerState
+        {
+            ComputerId = computer.Id,
+            ComputerName = computer.Name,
+            Location = computer.Location,
+            InventoryTag = computer.InventoryTag,
+            IpAddress = computer.IpAddress,
+            AdministrativeStatus = computer.Status,
+            OperationalStatus = operationalStatus,
+            OperationalStatusLabel = TranslateOperationalStatus(operationalStatus),
+            SessionUsername = computer.CurrentUsername,
+            LastSeenUtc = computer.LastSeenUtc,
+            StatusReason = operationalStatus == OperationalComputerStatus.Disabled
+                ? "Equipo deshabilitado administrativamente."
+                : operationalStatus == OperationalComputerStatus.Occupied
+                    ? "Actividad detectada con el modelo heredado."
+                    : "Sin sesion operativa confirmada."
         };
     }
 
@@ -247,6 +320,27 @@ internal static class RepositorySupport
             new() { Id = 5, Name = "BIB-05", Location = "Biblioteca", InventoryTag = "EQ-005", IpAddress = "192.168.14.105", Status = ComputerStatus.Available, CurrentUsername = null, LastSeenUtc = now.AddMinutes(-9) }
         };
 
+        var rooms = new List<Room>
+        {
+            new() { Id = 1, Name = "Laboratorio A", Code = "LAB-A", CanvasWidth = 1180, CanvasHeight = 620, Active = true },
+            new() { Id = 2, Name = "Biblioteca", Code = "BIB", CanvasWidth = 880, CanvasHeight = 420, Active = true }
+        };
+
+        var roomLayoutItems = new List<RoomLayoutItem>
+        {
+            new() { Id = 1, RoomId = 1, Label = "Equipo docente", ItemType = RoomLayoutItemType.TeacherDesk, X = 70, Y = 60, Width = 140, Height = 120, Orientation = "Horizontal", Capacity = 1, ComputerId = 1 },
+            new() { Id = 2, RoomId = 1, Label = "Mesa isla A", ItemType = RoomLayoutItemType.Table, X = 310, Y = 52, Width = 430, Height = 92, Orientation = "Horizontal", Capacity = 4, ComputerId = null },
+            new() { Id = 3, RoomId = 1, Label = "Puesto 01", ItemType = RoomLayoutItemType.Computer, X = 360, Y = 70, Width = 120, Height = 110, Orientation = "Horizontal", Capacity = 1, ComputerId = 2 },
+            new() { Id = 4, RoomId = 1, Label = "Puesto 02", ItemType = RoomLayoutItemType.Computer, X = 560, Y = 70, Width = 120, Height = 110, Orientation = "Horizontal", Capacity = 1, ComputerId = 3 },
+            new() { Id = 5, RoomId = 1, Label = "Pasillo central", ItemType = RoomLayoutItemType.EmptySpace, X = 300, Y = 230, Width = 380, Height = 80, Orientation = "Horizontal", Capacity = 1, ComputerId = null },
+            new() { Id = 6, RoomId = 1, Label = "Mesa isla B", ItemType = RoomLayoutItemType.Table, X = 300, Y = 330, Width = 120, Height = 320, Orientation = "Vertical", Capacity = 3, ComputerId = null },
+            new() { Id = 7, RoomId = 1, Label = "Puesto 03", ItemType = RoomLayoutItemType.Computer, X = 360, Y = 360, Width = 120, Height = 110, Orientation = "Horizontal", Capacity = 1, ComputerId = null },
+            new() { Id = 8, RoomId = 2, Label = "Biblioteca 01", ItemType = RoomLayoutItemType.Computer, X = 160, Y = 120, Width = 120, Height = 110, Orientation = "Horizontal", Capacity = 1, ComputerId = 4 },
+            new() { Id = 9, RoomId = 2, Label = "Biblioteca 02", ItemType = RoomLayoutItemType.Computer, X = 360, Y = 120, Width = 120, Height = 110, Orientation = "Horizontal", Capacity = 1, ComputerId = 5 },
+            new() { Id = 10, RoomId = 2, Label = "Mesa de consulta", ItemType = RoomLayoutItemType.Table, X = 120, Y = 90, Width = 420, Height = 170, Orientation = "Horizontal", Capacity = 4, ComputerId = null },
+            new() { Id = 11, RoomId = 2, Label = "Zona de consulta", ItemType = RoomLayoutItemType.EmptySpace, X = 580, Y = 100, Width = 180, Height = 140, Orientation = "Horizontal", Capacity = 1, ComputerId = null }
+        };
+
         var usage = new List<UsageRecord>();
         var usageId = 1;
         for (var dayOffset = 0; dayOffset < 14; dayOffset++)
@@ -267,6 +361,8 @@ internal static class RepositorySupport
             Semesters = semesters,
             Users = users,
             Computers = computers,
+            Rooms = rooms,
+            RoomLayoutItems = roomLayoutItems,
             UsageRecords = usage,
             AuditEntries = new List<AuditEntry>
             {

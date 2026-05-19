@@ -46,9 +46,33 @@ Cuando `AutoInitialize=true`, la aplicacion crea si faltan las tablas:
 - `careers`
 - `levels`
 - `computers`
+- `rooms`
+- `room_positions`
 - `usage_records`
+- `admin_audit_log`
 
 Esto mantiene compatibilidad con el esquema academico del proyecto y agrega las tablas necesarias para administrar equipos y estadisticas de uso.
+
+## Estado operativo de equipos
+
+La consola ya no se basa solo en `logoutstamp IS NULL` para determinar ocupacion. Cuando la base usa `login_sessions` con heartbeat y reconciliacion de sesiones, AdminWeb calcula estados operativos mas precisos:
+
+- `Disponible`
+- `Ocupado`
+- `Bloqueado`
+- `Desconectado`
+- `Sesion huerfana`
+- `Deshabilitado`
+
+En PostgreSQL y MySQL/MariaDB la lectura contempla estos campos cuando existen:
+
+- `session_state`
+- `last_heartbeat_at`
+- `session_end_reason`
+- `client_session_id`
+- `windows_session_id`
+
+Esto permite distinguir una sesion realmente activa de una bloqueada, desconectada o huerfana.
 
 ## Acceso administrativo
 
@@ -164,14 +188,30 @@ La aplicacion puede iniciar en modo `Json` y luego configurarse desde la interfa
 3. Selecciona `PostgreSQL` o `MySQL / MariaDB`.
 4. Captura host, puerto, base de datos, usuario, clave y modo SSL.
 5. Usa `Probar conexion`.
-6. Si la conexion es correcta, usa `Guardar configuracion`.
-7. Reinicia el contenedor:
+6. Usa `Ajustar tablas de AdminWeb` para crear o corregir las tablas auxiliares de la consola web sobre una base ya existente de OpenCredential.
+7. Si la conexion debe quedar persistida para los siguientes reinicios, usa `Guardar configuracion`.
+8. Reinicia el contenedor:
 
 ```bash
 docker restart opencredential-adminweb
 ```
 
 La configuracion se guarda en `/data/adminweb-runtime.json`, por eso es importante mantener montado el volumen `opencredential_adminweb_data:/data`.
+
+### Ajustar tablas auxiliares sin reinstalar
+
+Si OpenCredential ya fue desplegado antes y solo necesitas que la consola agregue o corrija sus tablas complementarias:
+
+1. Ve a `Configuracion`
+2. Captura o confirma la conexion actual
+3. Pulsa `Probar conexion`
+4. Pulsa `Ajustar tablas de AdminWeb`
+
+Ese boton reutiliza la misma logica de esquema del modo `AutoInitialize`, pero ejecutada manualmente desde la interfaz. Sirve para:
+
+- crear tablas nuevas de AdminWeb si faltan
+- agregar columnas nuevas compatibles con versiones recientes
+- dejar lista la consola sin reinstalar ni reconstruir la base base de OpenCredential
 
 ### Ejecutar con Compose
 
@@ -274,3 +314,9 @@ Para MySQL/MariaDB basta con cambiar:
 
 - `Database__Provider=MySql`
 - `Database__ConnectionString=Server=...;Port=3306;Database=...;User ID=...;Password=...`
+
+Y despues, desde la interfaz:
+
+1. `Probar conexion`
+2. `Ajustar tablas de AdminWeb`
+3. `Guardar configuracion`

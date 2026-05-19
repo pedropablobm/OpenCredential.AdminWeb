@@ -12,263 +12,840 @@
             <p class="eyebrow">Acceso administrativo</p>
             <h1>Inicia sesion para administrar OpenCredential AdminWeb.</h1>
             <p class="login-copy">
-                Esta consola protege la gestion de usuarios, claves, equipos y estadisticas. Usa la cuenta
-                administrativa configurada para el despliegue.
+                Gestiona usuarios, laboratorios, auditoria y configuracion tecnica desde una consola
+                modular, enfocada y mas facil de recorrer.
             </p>
-            <form id="loginForm" class="entity-form login-form">
+            <form id="loginForm" class="stack-form">
                 <input type="text" id="loginUsername" placeholder="Usuario administrador" required />
                 <input type="password" id="loginPassword" placeholder="Clave de acceso" required />
-                <button type="submit">Ingresar</button>
+                <button type="submit" class="btn btn-primary btn-block">Ingresar</button>
             </form>
-            <p class="muted" id="loginResult"></p>
+            <p class="support-text" id="loginResult"></p>
         </section>
     </div>
 
     <div class="page-shell">
-        <aside class="hero-panel">
-            <p class="eyebrow">OpenCredential AdminWeb</p>
-            <h1>Administracion web de usuarios, semestres, carreras y laboratorios.</h1>
-            <p class="hero-copy">
-                Controla altas, importaciones por archivo plano y el estado operativo de los equipos
-                desde un tablero visual pensado para coordinacion academica y soporte.
-            </p>
-
-            <div class="hero-stats" id="kpiCards"></div>
-
-            <div class="import-card">
-                <h2>Carga masiva de usuarios</h2>
-                <p>Sube un CSV, TXT o TSV con columnas como <code>username</code>, <code>firstName</code>, <code>lastName</code>, <code>email</code>, <code>documentId</code>, <code>career</code>, <code>semester</code>, <code>active</code>.</p>
-                <form id="importForm">
-                    <input type="file" id="userFile" name="file" accept=".csv,.txt,.tsv" required />
-                    <button type="submit">Importar usuarios</button>
-                </form>
-                <p class="muted" id="importResult"></p>
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-mark">OC</div>
+                <div>
+                    <h1>OpenCredential AdminWeb</h1>
+                    <p>Consola administrativa</p>
+                </div>
             </div>
 
-            <footer class="app-credits">
-                <strong>OpenCredential AdminWeb</strong>
-                <span>Desarrollado por Pedro Pablo Berm&uacute;dez Medina y Yuri Mercedes Berm&uacute;dez Mazuera.</span>
-                <span>Licencia BSD 3-Clause.</span>
+            <nav class="sidebar-nav">
+                <div class="nav-group">
+                    <p class="nav-label">General</p>
+                    <button type="button" class="nav-item is-active" data-view="overview">
+                        <span class="nav-icon"></span>
+                        <span>Overview</span>
+                    </button>
+                    <button type="button" class="nav-item" data-view="users">
+                        <span class="nav-icon"></span>
+                        <span>Usuarios</span>
+                    </button>
+                    <button type="button" class="nav-item" data-view="equipment">
+                        <span class="nav-icon"></span>
+                        <span>Equipos</span>
+                    </button>
+                </div>
+
+                <div class="nav-group">
+                    <p class="nav-label">Academico</p>
+                    <button type="button" class="nav-item" data-view="academic">
+                        <span class="nav-icon"></span>
+                        <span>Catalogos</span>
+                    </button>
+                    <button type="button" class="nav-item" data-view="import">
+                        <span class="nav-icon"></span>
+                        <span>Importaciones</span>
+                    </button>
+                </div>
+
+                <div class="nav-group">
+                    <p class="nav-label">Operacion</p>
+                    <button type="button" class="nav-item" data-view="audit">
+                        <span class="nav-icon"></span>
+                        <span>Auditoria</span>
+                    </button>
+                    <button type="button" class="nav-item" data-view="configuration">
+                        <span class="nav-icon"></span>
+                        <span>Configuracion</span>
+                    </button>
+                </div>
+            </nav>
+
+            <footer class="sidebar-footer">
+                <div class="sidebar-status">
+                    <span class="sidebar-status-label">Modo de datos</span>
+                    <strong id="sidebarDatabaseMode">JSON local</strong>
+                </div>
+                <div class="sidebar-status">
+                    <span class="sidebar-status-label">Sesion</span>
+                    <strong id="sidebarSession">No iniciada</strong>
+                </div>
+                <div class="sidebar-meta">
+                    <strong>OpenCredential AdminWeb</strong>
+                    <span>Desarrollado por Pedro Pablo Berm&uacute;dez Medina y Yuri Mercedes Berm&uacute;dez Mazuera.</span>
+                    <span>Licencia BSD 3-Clause.</span>
+                </div>
             </footer>
         </aside>
 
-        <main class="workspace">
-            <section class="panel filters-panel">
-                <div>
-                    <p class="section-label">Dashboard</p>
-                    <h2>Uso parametrizable de equipos</h2>
+        <main class="main-shell">
+            <header class="topbar">
+                <label class="search-shell" aria-label="Buscar">
+                    <span class="search-icon">⌕</span>
+                    <input type="text" id="globalSearch" placeholder="Buscar usuario, equipo o accion..." />
+                </label>
+                <div class="topbar-actions">
+                    <span class="status-chip" id="topbarDate">Cargando fecha...</span>
+                    <span class="status-chip" id="sessionBadge">Sesion no iniciada</span>
+                    <button type="button" class="btn btn-secondary" id="logoutBtn">Cerrar sesion</button>
                 </div>
-                <div class="session-strip">
-                    <span id="sessionBadge">Sesion no iniciada</span>
-                    <button type="button" class="btn-muted" id="logoutBtn">Cerrar sesion</button>
-                </div>
-                <div class="filters">
-                    <label>
-                        Rango
-                        <select id="rangeDays">
-                            <option value="7">7 dias</option>
-                            <option value="15">15 dias</option>
-                            <option value="30" selected>30 dias</option>
-                            <option value="60">60 dias</option>
-                        </select>
-                    </label>
-                    <label>
-                        Carrera
-                        <select id="careerFilter"></select>
-                    </label>
-                    <label>
-                        Semestre
-                        <select id="semesterFilter"></select>
-                    </label>
-                    <label>
-                        Estado equipo
-                        <select id="statusFilter">
-                            <option value="">Todos</option>
-                            <option value="Available">Disponible</option>
-                            <option value="InUse">En uso</option>
-                            <option value="Disabled">Deshabilitado</option>
-                        </select>
-                    </label>
-                </div>
-            </section>
+            </header>
 
-            <section class="panel">
-                <div class="panel-heading">
-                    <h3>Configuracion de base de datos</h3>
-                    <span>PostgreSQL o MySQL externo</span>
-                </div>
-                <form id="databaseConfigForm" class="entity-form two-columns">
-                    <select id="dbProvider">
-                        <option value="PostgreSql">PostgreSQL</option>
-                        <option value="MySql">MySQL / MariaDB</option>
-                    </select>
-                    <input type="text" id="dbHost" placeholder="Host o IP del servidor" required />
-                    <input type="number" id="dbPort" placeholder="Puerto" min="1" max="65535" required />
-                    <input type="text" id="dbName" placeholder="Nombre de la base de datos" required />
-                    <input type="text" id="dbUsername" placeholder="Usuario de base de datos" required />
-                    <input type="password" id="dbPassword" placeholder="Clave de base de datos" required />
-                    <select id="dbSslMode">
-                        <option value="Disable">SSL deshabilitado</option>
-                        <option value="Prefer">SSL preferido</option>
-                        <option value="Require">SSL requerido</option>
-                    </select>
-                    <label class="toggle">
-                        <input type="checkbox" id="dbAutoInitialize" checked />
-                        Crear/actualizar tablas si faltan
-                    </label>
-                    <div class="inline-actions full-span">
-                        <button type="button" id="testDatabaseBtn" class="btn-muted">Probar conexion</button>
-                        <button type="submit">Guardar configuracion</button>
-                    </div>
-                    <p class="muted full-span" id="databaseConfigResult"></p>
-                </form>
-            </section>
-
-            <section class="chart-grid">
-                <article class="panel">
-                    <div class="panel-heading">
-                        <h3>Estado de equipos</h3>
-                        <span>Vista operativa</span>
-                    </div>
-                    <div class="chart-bars" id="equipmentStatusChart"></div>
-                </article>
-                <article class="panel">
-                    <div class="panel-heading">
-                        <h3>Uso por carrera</h3>
-                        <span>Horas acumuladas</span>
-                    </div>
-                    <div class="chart-bars" id="usageByCareerChart"></div>
-                </article>
-                <article class="panel full-width">
-                    <div class="panel-heading">
-                        <h3>Tendencia de uso</h3>
-                        <span>Consumo diario de equipos</span>
-                    </div>
-                    <div class="trend-chart" id="dailyUsageTrend"></div>
-                </article>
-            </section>
-
-            <section class="panel">
-                <div class="panel-heading">
-                    <h3>Mapa visual del parque tecnologico</h3>
-                    <span>Lectura rapida del estado actual</span>
-                </div>
-                <div class="computer-grid" id="computerGrid"></div>
-            </section>
-
-            <section class="panel">
-                <div class="panel-heading">
-                    <h3>Auditoria administrativa</h3>
-                    <span>Ultimas acciones sobre la consola</span>
-                </div>
-                <div class="table-host" id="auditTable"></div>
-            </section>
-
-            <section class="management-grid">
-                <article class="panel">
-                    <div class="panel-heading">
-                        <h3>Carreras</h3>
-                        <span>Catalogo academico</span>
-                    </div>
-                    <form id="careerForm" class="entity-form">
-                        <input type="hidden" id="careerId" />
-                        <input type="text" id="careerName" placeholder="Nombre de la carrera" required />
-                        <label class="toggle">
-                            <input type="checkbox" id="careerActive" checked />
-                            Activa
-                        </label>
-                        <button type="submit">Guardar carrera</button>
-                    </form>
-                    <div class="table-host" id="careersTable"></div>
-                </article>
-
-                <article class="panel">
-                    <div class="panel-heading">
-                        <h3>Semestres</h3>
-                        <span>Niveles de formacion</span>
-                    </div>
-                    <form id="semesterForm" class="entity-form">
-                        <input type="hidden" id="semesterId" />
-                        <input type="text" id="semesterName" placeholder="Nombre del semestre" required />
-                        <label class="toggle">
-                            <input type="checkbox" id="semesterActive" checked />
-                            Activo
-                        </label>
-                        <button type="submit">Guardar semestre</button>
-                    </form>
-                    <div class="table-host" id="semestersTable"></div>
-                </article>
-            </section>
-
-            <section class="management-grid">
-                <article class="panel">
-                    <div class="panel-heading">
-                        <h3>Usuarios</h3>
-                        <span>Creacion y edicion individual</span>
-                    </div>
-                    <form id="userForm" class="entity-form two-columns">
-                        <input type="hidden" id="userId" />
-                        <input type="text" id="userUsername" placeholder="Usuario" required />
-                        <input type="text" id="userDocument" placeholder="Documento" required />
-                        <input type="text" id="userFirstName" placeholder="Nombres" required />
-                        <input type="text" id="userLastName" placeholder="Apellidos" required />
-                        <input type="email" id="userEmail" placeholder="Correo institucional" required />
-                        <select id="userCareer"></select>
-                        <select id="userSemester"></select>
-                        <select id="userHashMethod">
-                            <option value="BCRYPT">BCRYPT (Recomendado)</option>
-                            <option value="SHA512">SHA512</option>
-                            <option value="SSHA512">SSHA512</option>
-                            <option value="SHA384">SHA384</option>
-                            <option value="SSHA384">SSHA384</option>
-                            <option value="SHA256">SHA256</option>
-                            <option value="SSHA256">SSHA256</option>
-                            <option value="SHA1">SHA1</option>
-                            <option value="SSHA1">SSHA1</option>
-                            <option value="MD5">MD5</option>
-                            <option value="SMD5">SMD5</option>
-                            <option value="NONE">NONE</option>
-                        </select>
-                        <input type="password" id="userPassword" placeholder="Clave del usuario" />
-                        <div class="inline-actions full-span">
-                            <button type="button" id="generatePasswordBtn" class="btn-muted">Generar clave segura</button>
-                            <button type="button" id="resetPasswordBtn" class="btn-muted">Restablecer clave</button>
+            <div class="content-shell">
+                <section class="module-view is-active" id="overviewView">
+                    <div class="hero-card card">
+                        <div>
+                            <p class="breadcrumb">Inicio / Overview</p>
+                            <h2>Estado general del laboratorio y la administracion</h2>
+                            <p class="section-copy">
+                                La portada queda enfocada en resumen operativo, tendencias y alertas, sin mezclar
+                                catalogos, formularios tecnicos y tablas largas en la misma vista.
+                            </p>
                         </div>
-                        <p class="muted full-span" id="passwordActionResult"></p>
-                        <label class="toggle full-span">
-                            <input type="checkbox" id="userActive" checked />
-                            Usuario activo
-                        </label>
-                        <button type="submit" class="full-span">Guardar usuario</button>
-                    </form>
-                    <div class="table-host" id="usersTable"></div>
-                </article>
-
-                <article class="panel">
-                    <div class="panel-heading">
-                        <h3>Computadores</h3>
-                        <span>Inventario y estado</span>
+                        <div class="hero-actions">
+                            <button type="button" class="btn btn-primary" id="quickNewUserBtn">Nuevo usuario</button>
+                            <button type="button" class="btn btn-secondary" id="quickNewComputerBtn">Nuevo equipo</button>
+                            <button type="button" class="btn btn-secondary" id="quickImportBtn">Importar usuarios</button>
+                        </div>
                     </div>
-                    <form id="computerForm" class="entity-form two-columns">
-                        <input type="hidden" id="computerId" />
-                        <input type="text" id="computerName" placeholder="Nombre del equipo" required />
-                        <input type="text" id="computerInventory" placeholder="Placa o inventario" required />
-                        <input type="text" id="computerLocation" placeholder="Ubicacion" required />
-                        <input type="text" id="computerIpAddress" placeholder="Direccion IP" />
-                        <select id="computerStatus">
-                            <option value="Available">Disponible</option>
-                            <option value="InUse">En uso</option>
-                            <option value="Disabled">Deshabilitado</option>
-                        </select>
-                        <input type="text" id="computerCurrentUser" placeholder="Usuario actual (opcional)" />
-                        <button type="submit" class="full-span">Guardar equipo</button>
-                    </form>
-                    <div class="table-host" id="computersTable"></div>
-                </article>
-            </section>
+
+                    <div class="kpi-grid" id="overviewKpiCards"></div>
+
+                    <section class="card section-card">
+                        <div class="section-head">
+                            <div>
+                                <p class="section-label">Filtros globales</p>
+                                <h3>Dashboard operativo</h3>
+                            </div>
+                        </div>
+                        <div class="filter-grid">
+                            <label>
+                                Rango
+                                <select id="rangeDays">
+                                    <option value="7">7 dias</option>
+                                    <option value="15">15 dias</option>
+                                    <option value="30" selected>30 dias</option>
+                                    <option value="60">60 dias</option>
+                                </select>
+                            </label>
+                            <label>
+                                Carrera
+                                <select id="careerFilter"></select>
+                            </label>
+                            <label>
+                                Semestre
+                                <select id="semesterFilter"></select>
+                            </label>
+                            <label>
+                                Estado equipo
+                                <select id="statusFilter">
+                                    <option value="">Todos</option>
+                                    <option value="Available">Disponible</option>
+                                    <option value="Occupied">Ocupado</option>
+                                    <option value="Locked">Bloqueado</option>
+                                    <option value="Disconnected">Desconectado</option>
+                                    <option value="Orphaned">Sesion huerfana</option>
+                                    <option value="Disabled">Deshabilitado</option>
+                                </select>
+                            </label>
+                        </div>
+                    </section>
+
+                    <div class="overview-grid">
+                        <section class="card section-card">
+                            <div class="section-head">
+                                <div>
+                                    <p class="section-label">Uso</p>
+                                    <h3>Uso por carrera</h3>
+                                </div>
+                            </div>
+                            <div class="chart-bars" id="usageByCareerChart"></div>
+                        </section>
+
+                        <section class="card section-card">
+                            <div class="section-head">
+                                <div>
+                                    <p class="section-label">Equipos</p>
+                                    <h3>Estado actual</h3>
+                                </div>
+                            </div>
+                            <div class="chart-bars" id="equipmentStatusChart"></div>
+                        </section>
+                    </div>
+
+                    <section class="card section-card">
+                        <div class="section-head">
+                            <div>
+                                <p class="section-label">Tendencia</p>
+                                <h3>Consumo diario de equipos</h3>
+                            </div>
+                        </div>
+                        <div class="trend-chart" id="dailyUsageTrend"></div>
+                    </section>
+
+                    <div class="overview-grid">
+                        <section class="card section-card">
+                            <div class="section-head">
+                                <div>
+                                    <p class="section-label">Alertas</p>
+                                    <h3>Equipos con actividad</h3>
+                                </div>
+                            </div>
+                            <div class="activity-list" id="overviewEquipmentAlerts"></div>
+                        </section>
+
+                        <section class="card section-card">
+                            <div class="section-head">
+                                <div>
+                                    <p class="section-label">Auditoria</p>
+                                    <h3>Acciones recientes</h3>
+                                </div>
+                                <button type="button" class="link-button" data-view="audit">Ver todo</button>
+                            </div>
+                            <div class="activity-list" id="overviewAuditPreview"></div>
+                        </section>
+                    </div>
+                </section>
+
+                <section class="module-view" id="usersView">
+                    <div class="module-head">
+                        <div>
+                            <p class="breadcrumb">Gestion / Usuarios</p>
+                            <h2>Usuarios</h2>
+                            <p class="section-copy">Busca, filtra y gestiona cuentas sin mezclar el formulario con la tabla principal.</p>
+                        </div>
+                        <button type="button" class="btn btn-primary" id="newUserBtn">Nuevo usuario</button>
+                    </div>
+
+                    <section class="card section-card">
+                        <div class="filter-grid users-filter-grid">
+                            <label class="filter-wide">
+                                Buscar
+                                <input type="text" id="userSearch" placeholder="Usuario, documento o correo" />
+                            </label>
+                            <label>
+                                Estado
+                                <select id="userStatusFilter">
+                                    <option value="">Todos</option>
+                                    <option value="active">Activos</option>
+                                    <option value="inactive">Inactivos</option>
+                                </select>
+                            </label>
+                            <label>
+                                Carrera
+                                <select id="userCareerFilter"></select>
+                            </label>
+                        </div>
+                        <p class="summary-line" id="usersSummary"></p>
+                        <div class="table-host" id="usersTable"></div>
+                    </section>
+                </section>
+
+                <section class="module-view" id="equipmentView">
+                    <div class="module-head">
+                        <div>
+                            <p class="breadcrumb">Gestion / Equipos</p>
+                            <h2>Equipos</h2>
+                            <p class="section-copy">Inventario, ocupacion y monitoreo operativo en un solo modulo.</p>
+                        </div>
+                        <div class="hero-actions">
+                            <button type="button" class="btn btn-secondary" id="newRoomBtn">Nueva sala</button>
+                            <button type="button" class="btn btn-primary" id="newComputerBtn">Nuevo equipo</button>
+                        </div>
+                    </div>
+
+                    <div class="mini-kpi-grid" id="equipmentModuleKpis"></div>
+
+                    <section class="card section-card">
+                        <div class="section-head">
+                            <div>
+                                <p class="section-label">Explorador</p>
+                                <h3>Inventario y estado</h3>
+                            </div>
+                        </div>
+                        <div class="module-tabs">
+                            <button type="button" class="tab-button is-active" data-equipment-tab="list">Lista</button>
+                            <button type="button" class="tab-button" data-equipment-tab="map">Mapa visual</button>
+                            <button type="button" class="tab-button" data-equipment-tab="activity">Actividad reciente</button>
+                        </div>
+                        <div class="filter-grid users-filter-grid">
+                            <label class="filter-wide">
+                                Buscar
+                                <input type="text" id="equipmentSearch" placeholder="Equipo, inventario o IP" />
+                            </label>
+                            <label>
+                                Estado
+                                <select id="equipmentStatusFilter">
+                                    <option value="">Todos</option>
+                                    <option value="Available">Disponible</option>
+                                    <option value="Occupied">Ocupado</option>
+                                    <option value="Locked">Bloqueado</option>
+                                    <option value="Disconnected">Desconectado</option>
+                                    <option value="Orphaned">Sesion huerfana</option>
+                                    <option value="Disabled">Deshabilitado</option>
+                                </select>
+                            </label>
+                            <label>
+                                Ubicacion
+                                <input type="text" id="equipmentLocationSearch" placeholder="Sala, sede o bloque" />
+                            </label>
+                        </div>
+
+                        <div class="tab-panel is-active" id="equipmentListPanel">
+                            <div class="table-host" id="computersTable"></div>
+                        </div>
+                        <div class="tab-panel" id="equipmentMapPanel">
+                            <div class="room-tabs" id="roomTabs"></div>
+                            <div class="map-toolbar">
+                                <label class="filter-wide">
+                                    Sala
+                                    <select id="roomSelector"></select>
+                                </label>
+                                <div class="map-toolbar-actions">
+                                    <button type="button" class="btn btn-secondary" id="editRoomBtn">Editar sala</button>
+                                    <button type="button" class="btn btn-secondary" id="editLayoutBtn">Configurar mapa visual</button>
+                                </div>
+                            </div>
+                            <div class="map-explainer card soft-card">
+                                <div>
+                                    <p class="section-label">Vista operativa</p>
+                                    <h4>Distribucion fisica configurable por sala</h4>
+                                    <p class="support-text">Cada puesto representa una ubicacion real. Puedes mover libremente los equipos sobre la cuadricula, asignar puestos docentes y distinguir visualmente estados operativos y sesiones con alerta.</p>
+                                </div>
+                                <div class="map-legend">
+                                    <span class="legend-item"><span class="legend-dot available"></span> Libre</span>
+                                    <span class="legend-item"><span class="legend-dot occupied"></span> Ocupado</span>
+                                    <span class="legend-item"><span class="legend-dot locked"></span> Bloqueado</span>
+                                    <span class="legend-item"><span class="legend-dot disconnected"></span> Desconectado</span>
+                                    <span class="legend-item"><span class="legend-dot orphaned"></span> Sesion huerfana</span>
+                                    <span class="legend-item"><span class="legend-dot disabled"></span> Fuera de servicio</span>
+                                    <span class="legend-item"><span class="legend-dot empty"></span> Sin equipo</span>
+                                </div>
+                            </div>
+                            <div class="room-layout-shell">
+                                <div class="room-layout" id="roomLayoutGrid"></div>
+                                <aside class="room-detail-panel" id="roomDetailPanel">
+                                    <p class="support-text">Selecciona un puesto del mapa para ver su detalle.</p>
+                                </aside>
+                            </div>
+                        </div>
+                        <div class="tab-panel" id="equipmentActivityPanel">
+                            <div class="activity-list" id="equipmentActivityList"></div>
+                        </div>
+                    </section>
+                </section>
+
+                <section class="module-view" id="academicView">
+                    <div class="module-head">
+                        <div>
+                            <p class="breadcrumb">Gestion / Academico</p>
+                            <h2>Catalogos academicos</h2>
+                            <p class="section-copy">Carreras y semestres viven en un espacio mas liviano y facil de mantener.</p>
+                        </div>
+                        <button type="button" class="btn btn-primary" id="academicActionBtn">Nueva carrera</button>
+                    </div>
+
+                    <section class="card section-card">
+                        <div class="module-tabs">
+                            <button type="button" class="tab-button is-active" data-academic-tab="careers">Carreras</button>
+                            <button type="button" class="tab-button" data-academic-tab="semesters">Semestres</button>
+                        </div>
+                        <div class="filter-grid">
+                            <label class="filter-wide">
+                                Buscar
+                                <input type="text" id="academicSearch" placeholder="Nombre del catalogo" />
+                            </label>
+                        </div>
+                        <div class="tab-panel is-active" id="careersPanel">
+                            <div class="table-host" id="careersTable"></div>
+                        </div>
+                        <div class="tab-panel" id="semestersPanel">
+                            <div class="table-host" id="semestersTable"></div>
+                        </div>
+                    </section>
+                </section>
+
+                <section class="module-view" id="importView">
+                    <div class="module-head">
+                        <div>
+                            <p class="breadcrumb">Operacion / Importaciones</p>
+                            <h2>Carga masiva de usuarios</h2>
+                            <p class="section-copy">Sube CSV, TXT o TSV sin competir con dashboard, catalogos o formularios de otras areas.</p>
+                        </div>
+                    </div>
+
+                    <section class="card section-card">
+                        <div class="import-dropzone">
+                            <div>
+                                <h3>Archivo plano de usuarios</h3>
+                                <p class="section-copy">Formato esperado: <code>username</code>, <code>firstName</code>, <code>lastName</code>, <code>email</code>, <code>documentId</code>, <code>career</code>, <code>semester</code>, <code>active</code>.</p>
+                            </div>
+                            <form id="importForm" class="stack-form">
+                                <input type="file" id="userFile" name="file" accept=".csv,.txt,.tsv" required />
+                                <button type="submit" class="btn btn-primary">Importar usuarios</button>
+                            </form>
+                            <p class="support-text" id="importResult"></p>
+                        </div>
+                    </section>
+                </section>
+
+                <section class="module-view" id="auditView">
+                    <div class="module-head">
+                        <div>
+                            <p class="breadcrumb">Operacion / Auditoria</p>
+                            <h2>Auditoria administrativa</h2>
+                            <p class="section-copy">Consulta acciones recientes sin cargar la pantalla de inicio con tablas largas por defecto.</p>
+                        </div>
+                    </div>
+
+                    <section class="card section-card">
+                        <div class="filter-grid">
+                            <label class="filter-wide">
+                                Buscar
+                                <input type="text" id="auditSearch" placeholder="Actor, accion, entidad o IP" />
+                            </label>
+                        </div>
+                        <div class="table-host" id="auditTable"></div>
+                    </section>
+                </section>
+
+                <section class="module-view" id="configurationView">
+                    <div class="module-head">
+                        <div>
+                            <p class="breadcrumb">Sistema / Configuracion</p>
+                            <h2>Configuracion de base de datos</h2>
+                            <p class="section-copy">La configuracion tecnica vive en una vista aparte para no competir con tareas operativas del dia a dia.</p>
+                        </div>
+                    </div>
+
+                    <section class="card section-card">
+                        <div class="section-head">
+                            <div>
+                                <p class="section-label">Conexion externa</p>
+                                <h3>PostgreSQL o MySQL</h3>
+                            </div>
+                        </div>
+                        <form id="databaseConfigForm" class="drawer-form">
+                            <div class="config-layout">
+                                <section class="config-panel">
+                                    <div class="config-panel-head">
+                                        <p class="section-label">Acceso</p>
+                                        <h4>Conexion a la base</h4>
+                                        <p class="support-text">Usa la misma base donde OpenCredential ya registra usuarios, sesiones y eventos.</p>
+                                    </div>
+                                    <div class="form-grid two-columns">
+                                        <label>
+                                            Motor
+                                            <select id="dbProvider">
+                                                <option value="PostgreSql">PostgreSQL</option>
+                                                <option value="MySql">MySQL / MariaDB</option>
+                                            </select>
+                                        </label>
+                                        <label>
+                                            Host o IP
+                                            <input type="text" id="dbHost" placeholder="Host o IP del servidor" required />
+                                        </label>
+                                        <label>
+                                            Puerto
+                                            <input type="number" id="dbPort" placeholder="Puerto" min="1" max="65535" required />
+                                        </label>
+                                        <label>
+                                            Base de datos
+                                            <input type="text" id="dbName" placeholder="Nombre de la base de datos" required />
+                                        </label>
+                                        <label>
+                                            Usuario
+                                            <input type="text" id="dbUsername" placeholder="Usuario de base de datos" required />
+                                        </label>
+                                        <label>
+                                            Clave
+                                            <input type="password" id="dbPassword" placeholder="Clave de base de datos" required />
+                                        </label>
+                                        <label>
+                                            SSL
+                                            <select id="dbSslMode">
+                                                <option value="Disable">SSL deshabilitado</option>
+                                                <option value="Prefer">SSL preferido</option>
+                                                <option value="Require">SSL requerido</option>
+                                            </select>
+                                        </label>
+                                        <label class="toggle-card">
+                                            <input type="checkbox" id="dbAutoInitialize" checked />
+                                            <span>Crear o actualizar tablas automaticamente al iniciar</span>
+                                        </label>
+                                    </div>
+                                </section>
+
+                                <aside class="config-sidecard">
+                                    <div class="config-callout">
+                                        <strong>Esquema complementario de la consola</strong>
+                                        <p>
+                                            OpenCredential puede crear primero las tablas base. Luego AdminWeb agrega o ajusta
+                                            solo sus tablas auxiliares para salas, auditoria, inventario y administracion.
+                                        </p>
+                                    </div>
+                                    <div class="config-steps">
+                                        <div class="config-step">
+                                            <span>1</span>
+                                            <div>
+                                                <strong>Probar conexion</strong>
+                                                <p>Valida que la base responda con las credenciales actuales.</p>
+                                            </div>
+                                        </div>
+                                        <div class="config-step">
+                                            <span>2</span>
+                                            <div>
+                                                <strong>Ajustar tablas de AdminWeb</strong>
+                                                <p>Crea o corrige las tablas adicionales sin reinstalar OpenCredential.</p>
+                                            </div>
+                                        </div>
+                                        <div class="config-step">
+                                            <span>3</span>
+                                            <div>
+                                                <strong>Guardar configuracion</strong>
+                                                <p>Deja la conexion persistida para los siguientes reinicios del contenedor.</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </aside>
+                            </div>
+                            <div class="drawer-actions config-actions">
+                                <button type="button" class="btn btn-secondary" id="testDatabaseBtn">Probar conexion</button>
+                                <button type="button" class="btn btn-secondary" id="applySchemaBtn">Ajustar tablas de AdminWeb</button>
+                                <button type="submit" class="btn btn-primary">Guardar configuracion</button>
+                            </div>
+                            <p class="support-text config-result" id="databaseConfigResult"></p>
+                        </form>
+                    </section>
+                </section>
+            </div>
         </main>
     </div>
 
-    <script src="/app.js?v=20260422-5"></script>
+    <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+
+    <aside class="drawer" id="userDrawer" aria-hidden="true">
+        <div class="drawer-head">
+            <div>
+                <p class="section-label">Usuarios</p>
+                <h3 id="userDrawerTitle">Nuevo usuario</h3>
+            </div>
+            <button type="button" class="icon-close" data-close-drawer="userDrawer">×</button>
+        </div>
+        <form id="userForm" class="drawer-form">
+            <input type="hidden" id="userId" />
+            <div class="form-grid two-columns">
+                <label>
+                    Usuario
+                    <input type="text" id="userUsername" placeholder="Usuario" required />
+                </label>
+                <label>
+                    Documento
+                    <input type="text" id="userDocument" placeholder="Documento" required />
+                </label>
+                <label>
+                    Nombres
+                    <input type="text" id="userFirstName" placeholder="Nombres" required />
+                </label>
+                <label>
+                    Apellidos
+                    <input type="text" id="userLastName" placeholder="Apellidos" required />
+                </label>
+                <label class="full-span">
+                    Correo institucional
+                    <input type="email" id="userEmail" placeholder="Correo institucional" required />
+                </label>
+                <label>
+                    Carrera
+                    <select id="userCareer"></select>
+                </label>
+                <label>
+                    Semestre
+                    <select id="userSemester"></select>
+                </label>
+                <label>
+                    Algoritmo hash
+                    <select id="userHashMethod">
+                        <option value="BCRYPT">BCRYPT (Recomendado)</option>
+                        <option value="SHA512">SHA512</option>
+                        <option value="SSHA512">SSHA512</option>
+                        <option value="SHA384">SHA384</option>
+                        <option value="SSHA384">SSHA384</option>
+                        <option value="SHA256">SHA256</option>
+                        <option value="SSHA256">SSHA256</option>
+                        <option value="SHA1">SHA1</option>
+                        <option value="SSHA1">SSHA1</option>
+                        <option value="MD5">MD5</option>
+                        <option value="SMD5">SMD5</option>
+                        <option value="NONE">NONE</option>
+                    </select>
+                </label>
+                <label>
+                    Clave
+                    <input type="password" id="userPassword" placeholder="Clave del usuario" />
+                </label>
+                <div class="inline-actions full-span">
+                    <button type="button" class="btn btn-secondary" id="generatePasswordBtn">Generar segura</button>
+                    <button type="button" class="btn btn-secondary" id="resetPasswordBtn">Restablecer clave</button>
+                </div>
+                <p class="support-text full-span" id="passwordActionResult"></p>
+                <label class="toggle-card full-span">
+                    <input type="checkbox" id="userActive" checked />
+                    <span>Usuario activo</span>
+                </label>
+            </div>
+            <div class="drawer-actions">
+                <button type="button" class="btn btn-secondary" data-close-drawer="userDrawer">Cancelar</button>
+                <button type="submit" class="btn btn-primary">Guardar usuario</button>
+            </div>
+        </form>
+    </aside>
+
+    <aside class="drawer" id="computerDrawer" aria-hidden="true">
+        <div class="drawer-head">
+            <div>
+                <p class="section-label">Equipos</p>
+                <h3 id="computerDrawerTitle">Nuevo equipo</h3>
+            </div>
+            <button type="button" class="icon-close" data-close-drawer="computerDrawer">×</button>
+        </div>
+        <form id="computerForm" class="drawer-form">
+            <input type="hidden" id="computerId" />
+            <div class="form-grid two-columns">
+                <label>
+                    Nombre del equipo
+                    <input type="text" id="computerName" placeholder="Nombre del equipo" required />
+                </label>
+                <label>
+                    Placa o inventario
+                    <input type="text" id="computerInventory" placeholder="Placa o inventario" required />
+                </label>
+                <label class="full-span">
+                    Ubicacion
+                    <input type="text" id="computerLocation" placeholder="Ubicacion" required />
+                </label>
+                <label>
+                    Direccion IP
+                    <input type="text" id="computerIpAddress" placeholder="Direccion IP" />
+                </label>
+                <label>
+                    Estado
+                    <select id="computerStatus">
+                        <option value="Available">Disponible</option>
+                        <option value="InUse">En uso</option>
+                        <option value="Disabled">Deshabilitado</option>
+                    </select>
+                </label>
+                <label class="full-span">
+                    Usuario actual (opcional)
+                    <input type="text" id="computerCurrentUser" placeholder="Usuario actual" />
+                </label>
+            </div>
+            <div class="drawer-actions">
+                <button type="button" class="btn btn-secondary" data-close-drawer="computerDrawer">Cancelar</button>
+                <button type="submit" class="btn btn-primary">Guardar equipo</button>
+            </div>
+        </form>
+    </aside>
+
+    <aside class="drawer" id="roomDrawer" aria-hidden="true">
+        <div class="drawer-head">
+            <div>
+                <p class="section-label">Salas</p>
+                <h3 id="roomDrawerTitle">Nueva sala</h3>
+            </div>
+            <button type="button" class="icon-close" data-close-drawer="roomDrawer">×</button>
+        </div>
+        <form id="roomForm" class="drawer-form">
+            <input type="hidden" id="roomId" />
+            <div class="form-grid two-columns">
+                <label class="full-span">
+                    Nombre de la sala
+                    <input type="text" id="roomName" placeholder="Ej. Laboratorio A" required />
+                </label>
+                <label>
+                    Codigo corto
+                    <input type="text" id="roomCode" placeholder="Ej. LAB-A" required />
+                </label>
+                <label>
+                    Ancho del plano
+                    <input type="number" id="roomCanvasWidth" min="640" max="4000" step="10" value="1200" required />
+                </label>
+                <label>
+                    Alto del plano
+                    <input type="number" id="roomCanvasHeight" min="360" max="2400" step="10" value="720" required />
+                </label>
+                <label class="toggle-card full-span">
+                    <input type="checkbox" id="roomActive" checked />
+                    <span>Sala activa</span>
+                </label>
+            </div>
+            <div class="drawer-actions">
+                <button type="button" class="btn btn-secondary" data-close-drawer="roomDrawer">Cancelar</button>
+                <button type="submit" class="btn btn-primary">Guardar sala</button>
+            </div>
+        </form>
+    </aside>
+
+    <aside class="drawer drawer-wide" id="layoutDrawer" aria-hidden="true">
+        <div class="drawer-head">
+            <div>
+                <p class="section-label">Mapa visual</p>
+                <h3 id="layoutDrawerTitle">Configurar distribucion fisica</h3>
+            </div>
+            <button type="button" class="icon-close" data-close-drawer="layoutDrawer">×</button>
+        </div>
+        <form id="layoutForm" class="drawer-form">
+            <input type="hidden" id="layoutRoomId" />
+            <div class="form-grid two-columns">
+                <label>
+                    Ancho del plano
+                    <input type="number" id="layoutCanvasWidth" min="640" max="4000" step="10" value="1200" required />
+                </label>
+                <label>
+                    Alto del plano
+                    <input type="number" id="layoutCanvasHeight" min="360" max="2400" step="10" value="720" required />
+                </label>
+            </div>
+            <div class="drawer-inline-head">
+                <div>
+                    <p class="section-label">Editor de puestos</p>
+                    <h4>Plano flotante</h4>
+                </div>
+                <div class="map-toolbar-actions">
+                    <button type="button" class="btn btn-secondary" id="resizeLayoutCanvasBtn">Actualizar plano</button>
+                    <button type="button" class="btn btn-secondary" id="addComputerItemBtn">Agregar equipo</button>
+                    <button type="button" class="btn btn-secondary" id="addEmptySpaceBtn">Agregar espacio</button>
+                    <button type="button" class="btn btn-secondary" id="addTeacherDeskBtn">Agregar docente</button>
+                    <button type="button" class="btn btn-secondary" id="deleteLayoutItemBtn">Eliminar seleccionado</button>
+                </div>
+            </div>
+            <div class="floating-layout-editor">
+                <div class="layout-canvas-shell">
+                    <div class="layout-canvas" id="layoutEditorCanvas"></div>
+                </div>
+                <aside class="layout-inspector card soft-card">
+                    <div>
+                        <p class="section-label">Inspector</p>
+                        <h4>Elemento seleccionado</h4>
+                    </div>
+                    <div class="form-grid" id="layoutInspectorEmpty">
+                        <p class="support-text">Selecciona un elemento del plano para editar etiqueta, tipo, posicion y equipo asignado.</p>
+                    </div>
+                    <div class="form-grid" id="layoutInspectorForm" hidden>
+                        <label>
+                            Etiqueta
+                            <input type="text" id="layoutItemLabel" />
+                        </label>
+                            <label>
+                                Tipo
+                                <select id="layoutItemType">
+                                    <option value="Computer">Equipo</option>
+                                    <option value="EmptySpace">Espacio en blanco</option>
+                                    <option value="TeacherDesk">Puesto docente</option>
+                                    <option value="Reference">Referencia</option>
+                            </select>
+                        </label>
+                        <label>
+                            Equipo asignado
+                            <select id="layoutItemComputer"></select>
+                        </label>
+                            <label>
+                                Posicion X
+                                <input type="number" id="layoutItemX" min="0" step="20" />
+                            </label>
+                            <label>
+                                Posicion Y
+                                <input type="number" id="layoutItemY" min="0" step="20" />
+                            </label>
+                            <label>
+                                Ancho
+                                <input type="number" id="layoutItemWidth" min="40" step="20" />
+                            </label>
+                            <label>
+                                Alto
+                                <input type="number" id="layoutItemHeight" min="40" step="20" />
+                            </label>
+                    </div>
+                </aside>
+            </div>
+            <div class="drawer-actions">
+                <button type="button" class="btn btn-secondary" data-close-drawer="layoutDrawer">Cancelar</button>
+                <button type="submit" class="btn btn-primary">Guardar mapa visual</button>
+            </div>
+            <p class="support-text" id="layoutFormResult"></p>
+        </form>
+    </aside>
+
+    <aside class="drawer" id="careerDrawer" aria-hidden="true">
+        <div class="drawer-head">
+            <div>
+                <p class="section-label">Catalogos</p>
+                <h3 id="careerDrawerTitle">Nueva carrera</h3>
+            </div>
+            <button type="button" class="icon-close" data-close-drawer="careerDrawer">×</button>
+        </div>
+        <form id="careerForm" class="drawer-form">
+            <input type="hidden" id="careerId" />
+            <div class="form-grid">
+                <label>
+                    Nombre de la carrera
+                    <input type="text" id="careerName" placeholder="Nombre de la carrera" required />
+                </label>
+                <label class="toggle-card">
+                    <input type="checkbox" id="careerActive" checked />
+                    <span>Carrera activa</span>
+                </label>
+            </div>
+            <div class="drawer-actions">
+                <button type="button" class="btn btn-secondary" data-close-drawer="careerDrawer">Cancelar</button>
+                <button type="submit" class="btn btn-primary">Guardar carrera</button>
+            </div>
+        </form>
+    </aside>
+
+    <aside class="drawer" id="semesterDrawer" aria-hidden="true">
+        <div class="drawer-head">
+            <div>
+                <p class="section-label">Catalogos</p>
+                <h3 id="semesterDrawerTitle">Nuevo semestre</h3>
+            </div>
+            <button type="button" class="icon-close" data-close-drawer="semesterDrawer">×</button>
+        </div>
+        <form id="semesterForm" class="drawer-form">
+            <input type="hidden" id="semesterId" />
+            <div class="form-grid">
+                <label>
+                    Nombre del semestre
+                    <input type="text" id="semesterName" placeholder="Nombre del semestre" required />
+                </label>
+                <label class="toggle-card">
+                    <input type="checkbox" id="semesterActive" checked />
+                    <span>Semestre activo</span>
+                </label>
+            </div>
+            <div class="drawer-actions">
+                <button type="button" class="btn btn-secondary" data-close-drawer="semesterDrawer">Cancelar</button>
+                <button type="submit" class="btn btn-primary">Guardar semestre</button>
+            </div>
+        </form>
+    </aside>
+
+    <script src="/app.js?v=20260504-1"></script>
 </body>
 </html>
