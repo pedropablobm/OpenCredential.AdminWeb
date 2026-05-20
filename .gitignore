@@ -7,4 +7,4 @@ App_Data/
 *.suo
 *.log
 .dotnet-home/
-
+artifacts/
