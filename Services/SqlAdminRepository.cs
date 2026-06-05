@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Globalization;
 using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
@@ -12,6 +13,7 @@ public sealed class SqlAdminRepository : IAdminRepository
 {
     private static readonly TimeSpan HeartbeatFreshThreshold = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan HeartbeatStaleThreshold = TimeSpan.FromMinutes(10);
+    private static readonly TimeZoneInfo LoginSessionTimeZone = ResolveLoginSessionTimeZone();
     private readonly DatabaseOptions _options;
     private readonly DbProviderFactory _factory;
     private readonly bool _isPostgreSql;
@@ -93,6 +95,9 @@ public sealed class SqlAdminRepository : IAdminRepository
                 });
             }
         }
+
+        var groups = LoadGroups(connection);
+        ApplyGroupsToUsers(connection, users, groups);
 
         var computers = new List<Computer>();
         using (var command = CreateCommand(connection, $"SELECT id, name, location, inventory_tag, ip_address, status, current_username, last_seen_utc FROM {Quote("computers")} ORDER BY name"))
@@ -183,6 +188,7 @@ public sealed class SqlAdminRepository : IAdminRepository
         {
             Careers = careers,
             Semesters = semesters,
+            Groups = groups,
             Users = users,
             Computers = computers,
             ComputedComputers = computedComputers,
@@ -196,6 +202,374 @@ public sealed class SqlAdminRepository : IAdminRepository
     public DashboardResponse GetDashboard(int rangeDays, int? careerId, int? semesterId, string? status)
     {
         return RepositorySupport.BuildDashboard(GetSnapshot(), rangeDays, careerId, semesterId, status);
+    }
+
+    public ReportsResponse GetReports(DateTime fromUtc, DateTime toUtc, int? careerId, int? semesterId, int? groupId, string? username, string? sessionOrigin, string? sessionState, string? operationalStatus)
+    {
+        using var connection = OpenConnection();
+        return RepositorySupport.BuildReportsResponse(LoadReportSessions(connection, fromUtc, toUtc, careerId, semesterId, groupId, username, sessionOrigin, sessionState, operationalStatus));
+    }
+
+    public List<GroupInfo> GetGroups()
+    {
+        using var connection = OpenConnection();
+        return LoadGroups(connection);
+    }
+
+    public UserAccount? FindUserByUsername(string username)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            return null;
+        }
+
+        using var connection = OpenConnection();
+        UserAccount? user;
+        using (var command = CreateCommand(connection, $"SELECT id, username, COALESCE(first_name,''), COALESCE(last_name,''), COALESCE(email,''), COALESCE(document_id,''), career_id, level_id, status, COALESCE(hash_method,'NONE'), password_hash, COALESCE(failed_attempts, 0), locked_until, last_attempt_at FROM {Quote("users")} WHERE LOWER(username) = LOWER(@username)"))
+        {
+            AddParameter(command, "@username", username.Trim());
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return null;
+            }
+
+            user = new UserAccount
+            {
+                Id = reader.GetInt32(0),
+                Username = reader.GetString(1),
+                FirstName = reader.GetString(2),
+                LastName = reader.GetString(3),
+                Email = reader.GetString(4),
+                DocumentId = reader.GetString(5),
+                CareerId = reader.IsDBNull(6) ? null : reader.GetInt32(6),
+                SemesterId = reader.IsDBNull(7) ? null : reader.GetInt32(7),
+                Active = ReadIntAsBool(reader, 8),
+                HashMethod = reader.GetString(9),
+                PasswordHash = reader.IsDBNull(10) ? null : reader.GetString(10),
+                FailedAttempts = ReadFlexibleInt32(reader, 11) ?? 0,
+                LockedUntilUtc = ReadFlexibleDateTimeUtc(reader, 12),
+                LastAttemptAtUtc = ReadFlexibleDateTimeUtc(reader, 13)
+            };
+        }
+
+        var groups = LoadGroups(connection);
+        ApplyGroupsToUsers(connection, new List<UserAccount> { user! }, groups);
+        return user;
+    }
+
+    public void RegisterFailedSignIn(string username, int maxFailedAttempts, int lockoutMinutes)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            return;
+        }
+
+        using var connection = OpenConnection();
+        using var command = CreateCommand(connection,
+            $"UPDATE {Quote("users")} SET failed_attempts = COALESCE(failed_attempts, 0) + 1, last_attempt_at = @nowUtc, locked_until = CASE WHEN COALESCE(failed_attempts, 0) + 1 >= @maxFailedAttempts THEN @lockedUntilUtc ELSE locked_until END WHERE LOWER(username) = LOWER(@username)");
+        var nowUtc = DateTime.UtcNow;
+        AddParameter(command, "@nowUtc", nowUtc);
+        AddParameter(command, "@lockedUntilUtc", nowUtc.AddMinutes(Math.Max(1, lockoutMinutes)));
+        AddParameter(command, "@maxFailedAttempts", Math.Max(1, maxFailedAttempts));
+        AddParameter(command, "@username", username.Trim());
+        command.ExecuteNonQuery();
+    }
+
+    public void ResetFailedSignIn(string username)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            return;
+        }
+
+        using var connection = OpenConnection();
+        using var command = CreateCommand(connection,
+            $"UPDATE {Quote("users")} SET failed_attempts = 0, locked_until = NULL WHERE LOWER(username) = LOWER(@username)");
+        AddParameter(command, "@username", username.Trim());
+        command.ExecuteNonQuery();
+    }
+
+    public PortalProfile? GetPortalProfile(string username)
+    {
+        var user = FindUserByUsername(username);
+        if (user is null)
+        {
+            return null;
+        }
+
+        using var connection = OpenConnection();
+        var careerName = LoadLookupName(connection, "careers", user.CareerId);
+        var semesterName = LoadLookupName(connection, "levels", user.SemesterId);
+        return new PortalProfile
+        {
+            UserId = user.Id,
+            Username = user.Username,
+            FirstName = user.FirstName,
+            LastName = user.LastName,
+            FullName = $"{user.FirstName} {user.LastName}".Trim(),
+            Email = user.Email,
+            DocumentId = user.DocumentId,
+            CareerId = user.CareerId,
+            CareerName = careerName,
+            SemesterId = user.SemesterId,
+            SemesterName = semesterName,
+            Active = user.Active,
+            HashMethod = user.HashMethod,
+            Groups = user.Groups
+        };
+    }
+
+    public PortalProfile? UpdatePortalProfile(string username, PortalProfileUpdateInput input)
+    {
+        var normalizedUsername = username?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedUsername))
+        {
+            return null;
+        }
+
+        using var connection = OpenConnection();
+        using var command = CreateCommand(connection,
+            $"UPDATE {Quote("users")} SET first_name = @firstName, last_name = @lastName, email = @email WHERE LOWER(username) = LOWER(@username)");
+        AddParameter(command, "@firstName", input.FirstName.Trim());
+        AddParameter(command, "@lastName", input.LastName.Trim());
+        AddParameter(command, "@email", input.Email.Trim());
+        AddParameter(command, "@username", normalizedUsername);
+        var affected = command.ExecuteNonQuery();
+
+        return affected == 0 ? null : GetPortalProfile(normalizedUsername);
+    }
+
+    public PasswordResetResult? UpdatePasswordByUsername(string username, string plainPassword, string hashMethod)
+    {
+        var normalizedUsername = username?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedUsername) || string.IsNullOrWhiteSpace(plainPassword))
+        {
+            return null;
+        }
+
+        using var connection = OpenConnection();
+        var user = FindUserByUsername(normalizedUsername);
+        if (user is null)
+        {
+            return null;
+        }
+
+        var method = PasswordHashService.NormalizeInteractiveMethod(hashMethod);
+        using var update = CreateCommand(connection, $"UPDATE {Quote("users")} SET hash_method = @hashMethod, password_hash = @passwordHash, failed_attempts = 0, locked_until = NULL WHERE LOWER(username) = LOWER(@username)");
+        AddParameter(update, "@hashMethod", method);
+        AddParameter(update, "@passwordHash", PasswordHashService.HashPassword(plainPassword.Trim(), method));
+        AddParameter(update, "@username", normalizedUsername);
+        update.ExecuteNonQuery();
+
+        return new PasswordResetResult
+        {
+            UserId = user.Id,
+            Username = user.Username,
+            HashMethod = method,
+            GeneratedPassword = plainPassword.Trim()
+        };
+    }
+
+    public PortalPasswordRecoveryResult RecoverPortalPassword(PortalPasswordRecoveryInput input, int tokenLifetimeMinutes)
+    {
+        var normalizedUsername = input.Username?.Trim();
+        var normalizedDocument = input.DocumentId?.Trim();
+        var normalizedEmail = input.Email?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedUsername) || string.IsNullOrWhiteSpace(normalizedDocument) || string.IsNullOrWhiteSpace(normalizedEmail))
+        {
+            return new PortalPasswordRecoveryResult
+            {
+                Success = false,
+                Message = "Completa usuario, documento y correo institucional para recuperar la clave."
+            };
+        }
+
+        using var connection = OpenConnection();
+        if (!HasPortalResetTokenSchema(connection))
+        {
+            return new PortalPasswordRecoveryResult
+            {
+                Success = false,
+                Message = "La tabla de recuperacion no esta actualizada. Entra a Configuracion y usa 'Ajustar tablas de AdminWeb'."
+            };
+        }
+
+        CleanupPortalResetTokens(connection);
+        using var find = CreateCommand(connection,
+            $"SELECT id, username, status FROM {Quote("users")} WHERE LOWER(username) = LOWER(@username) AND LOWER(document_id) = LOWER(@documentId) AND LOWER(email) = LOWER(@email)");
+        AddParameter(find, "@username", normalizedUsername);
+        AddParameter(find, "@documentId", normalizedDocument);
+        AddParameter(find, "@email", normalizedEmail);
+        using var reader = find.ExecuteReader();
+        if (!reader.Read())
+        {
+            return new PortalPasswordRecoveryResult
+            {
+                Success = false,
+                Message = "No fue posible validar los datos de recuperacion."
+            };
+        }
+
+        var isActive = ReadStatusAsBool(reader, 2);
+        if (!isActive)
+        {
+            return new PortalPasswordRecoveryResult
+            {
+                Success = false,
+                Message = "El usuario no se encuentra habilitado para recuperar la clave."
+            };
+        }
+
+        var userId = ReadFlexibleInt32(reader, 0);
+        var usernameValue = ReadFlexibleString(reader, 1) ?? normalizedUsername;
+        reader.Close();
+
+        var token = PasswordHashService.GenerateOpaqueToken();
+        var tokenHash = PasswordHashService.HashOpaqueToken(token);
+        var expiresAtUtc = DateTime.UtcNow.AddMinutes(Math.Max(5, tokenLifetimeMinutes));
+        using (var deleteExisting = CreateCommand(connection, $"DELETE FROM {Quote("portal_password_reset_tokens")} WHERE (user_id = @userId OR LOWER(username) = LOWER(@username))"))
+        {
+            AddParameter(deleteExisting, "@userId", (object?)userId ?? DBNull.Value);
+            AddParameter(deleteExisting, "@username", usernameValue);
+            deleteExisting.ExecuteNonQuery();
+        }
+        using var insert = CreateCommand(connection,
+            $"INSERT INTO {Quote("portal_password_reset_tokens")} (id, user_id, username, email, reset_token, created_utc, expires_utc, consumed_utc) VALUES (@id, @userId, @username, @email, @token, @createdUtc, @expiresUtc, NULL)");
+        AddParameter(insert, "@id", NextId(connection, "portal_password_reset_tokens"));
+        AddParameter(insert, "@userId", (object?)userId ?? DBNull.Value);
+        AddParameter(insert, "@username", usernameValue);
+        AddParameter(insert, "@email", normalizedEmail);
+        AddParameter(insert, "@token", tokenHash);
+        AddParameter(insert, "@createdUtc", DateTime.UtcNow);
+        AddParameter(insert, "@expiresUtc", expiresAtUtc);
+        insert.ExecuteNonQuery();
+
+        return new PortalPasswordRecoveryResult
+        {
+            Success = true,
+            Message = "Se genero un token temporal de recuperacion. Usalo para definir una nueva clave.",
+            ResetToken = token,
+            ExpiresAtUtc = expiresAtUtc,
+            DeliveryHint = $"Token visible solo para pruebas internas. Debe enviarse al correo {normalizedEmail} en una integracion posterior."
+        };
+    }
+
+    public bool ResetPortalPasswordWithToken(PortalPasswordResetWithTokenInput input, out string message)
+    {
+        message = "No fue posible restablecer la clave.";
+        if (string.IsNullOrWhiteSpace(input.Token) || string.IsNullOrWhiteSpace(input.NewPassword) || string.IsNullOrWhiteSpace(input.ConfirmPassword))
+        {
+            message = "Completa token, nueva clave y confirmacion.";
+            return false;
+        }
+
+        if (!string.Equals(input.NewPassword, input.ConfirmPassword, StringComparison.Ordinal))
+        {
+            message = "La confirmacion no coincide con la nueva clave.";
+            return false;
+        }
+
+        using var connection = OpenConnection();
+        if (!HasPortalResetTokenSchema(connection))
+        {
+            message = "La tabla de tokens de recuperacion no esta actualizada. Ajusta las tablas de AdminWeb desde Configuracion.";
+            return false;
+        }
+
+        CleanupPortalResetTokens(connection);
+
+        using var find = CreateCommand(connection,
+            $"SELECT id, user_id, username, expires_utc, consumed_utc FROM {Quote("portal_password_reset_tokens")} WHERE UPPER(reset_token) = UPPER(@token) ORDER BY created_utc DESC");
+        AddParameter(find, "@token", PasswordHashService.HashOpaqueToken(input.Token.Trim()));
+        using var reader = find.ExecuteReader();
+        if (!reader.Read())
+        {
+            message = "El token no existe o ya no es valido.";
+            return false;
+        }
+
+        var tokenId = ReadFlexibleInt32(reader, 0) ?? 0;
+        var userId = ReadFlexibleInt32(reader, 1);
+        var username = ReadFlexibleString(reader, 2);
+        var expiresAtUtc = ReadFlexibleDateTimeUtc(reader, 3);
+        var consumedUtc = ReadFlexibleDateTimeUtc(reader, 4);
+        reader.Close();
+
+        if (consumedUtc.HasValue || !expiresAtUtc.HasValue || expiresAtUtc.Value < DateTime.UtcNow)
+        {
+            message = "El token ya fue usado o expiro.";
+            return false;
+        }
+
+        var user = !string.IsNullOrWhiteSpace(username) ? FindUserByUsername(username) : null;
+        if (user is null && userId.HasValue)
+        {
+            user = GetSnapshot().Users.FirstOrDefault(item => item.Id == userId.Value);
+        }
+
+        if (user is null || !user.Active)
+        {
+            message = "El usuario asociado al token no esta disponible.";
+            return false;
+        }
+
+        var result = UpdatePasswordByUsername(user.Username, input.NewPassword.Trim(), input.HashMethod);
+        if (result is null)
+        {
+            message = "No fue posible actualizar la clave.";
+            return false;
+        }
+
+        using var consume = CreateCommand(connection, $"UPDATE {Quote("portal_password_reset_tokens")} SET consumed_utc = @consumedUtc WHERE id = @id");
+        AddParameter(consume, "@consumedUtc", DateTime.UtcNow);
+        AddParameter(consume, "@id", tokenId);
+        consume.ExecuteNonQuery();
+
+        message = "La clave fue restablecida correctamente.";
+        return true;
+    }
+
+    public List<PortalSessionEntry> GetPortalSessions(string username, int take)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            return [];
+        }
+
+        using var connection = OpenConnection();
+        return LoadReportSessions(
+                connection,
+                DateTime.UtcNow.AddDays(-90),
+                DateTime.UtcNow,
+                null,
+                null,
+                null,
+                username.Trim(),
+                null,
+                null,
+                null)
+            .Where(item => string.Equals(item.Username, username.Trim(), StringComparison.OrdinalIgnoreCase))
+            .Take(Math.Max(1, take))
+            .Select(item => new PortalSessionEntry
+            {
+                SessionId = item.SessionId,
+                Machine = item.Machine,
+                RoomName = item.RoomName,
+                InventoryTag = item.InventoryTag,
+                SessionState = item.SessionState,
+                SessionStateLabel = TranslateSessionStateLabel(item.SessionState),
+                SessionEndReason = item.SessionEndReason,
+                SessionOrigin = item.SessionOrigin,
+                OriginLabel = RepositorySupport.TranslateSessionOrigin(item.SessionOrigin),
+                OperationalStatus = item.OperationalStatus,
+                OperationalStatusLabel = item.OperationalStatusLabel,
+                LoginStamp = item.LoginStamp,
+                LogoutStamp = item.LogoutStamp,
+                LastHeartbeatAt = item.LastHeartbeatAt,
+                DurationHours = item.DurationHours
+            })
+            .ToList();
     }
 
     public List<AuditEntry> GetAuditEntries(int take)
@@ -222,6 +596,208 @@ public sealed class SqlAdminRepository : IAdminRepository
         }
 
         return entries;
+    }
+
+    private List<ReportSessionRow> LoadReportSessions(
+        DbConnection connection,
+        DateTime fromUtc,
+        DateTime toUtc,
+        int? careerId,
+        int? semesterId,
+        int? groupId,
+        string? username,
+        string? sessionOrigin,
+        string? sessionState,
+        string? operationalStatus)
+    {
+        if (!TableExists(connection, "login_sessions"))
+        {
+            return [];
+        }
+
+        var hasClientSessionId = ColumnExists(connection, "login_sessions", "client_session_id");
+        var hasWindowsSessionId = ColumnExists(connection, "login_sessions", "windows_session_id");
+        var hasSessionState = ColumnExists(connection, "login_sessions", "session_state");
+        var hasLastHeartbeatAt = ColumnExists(connection, "login_sessions", "last_heartbeat_at");
+        var hasSessionEndReason = ColumnExists(connection, "login_sessions", "session_end_reason");
+        var hasSessionOrigin = ColumnExists(connection, "login_sessions", "session_origin");
+        var lastHeartbeatExpression = hasLastHeartbeatAt ? "ls.last_heartbeat_at" : "NULL";
+        var activityReferenceExpression = hasLastHeartbeatAt ? "COALESCE(ls.last_heartbeat_at, ls.loginstamp)" : "ls.loginstamp";
+        var heartbeatAgeSql = _isPostgreSql
+            ? $"GREATEST(0, EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - {activityReferenceExpression})))::INT"
+            : $"GREATEST(0, TIMESTAMPDIFF(SECOND, {activityReferenceExpression}, CURRENT_TIMESTAMP))";
+        var hasRooms = TableExists(connection, "rooms");
+        var hasRoomPositions = TableExists(connection, "room_positions");
+        var hasGroups = TableExists(connection, "groups");
+        var hasUserGroups = TableExists(connection, "user_groups");
+        var sessionStateExpression = hasSessionState ? "COALESCE(ls.session_state, '')" : "''";
+        var sessionEndReasonExpression = hasSessionEndReason ? "COALESCE(ls.session_end_reason, '')" : "''";
+        var sessionOriginExpression = hasSessionOrigin ? "COALESCE(ls.session_origin, '')" : "''";
+        var groupNamesSql = hasGroups && hasUserGroups
+            ? (_isPostgreSql
+                ? "COALESCE(string_agg(DISTINCT g.group_name, ' | ' ORDER BY g.group_name), '')"
+                : "COALESCE(GROUP_CONCAT(DISTINCT g.group_name ORDER BY g.group_name SEPARATOR ' | '), '')")
+            : "''";
+        var roomNameSql = hasRooms && hasRoomPositions
+            ? "COALESCE(r.name, comp.location, '')"
+            : "COALESCE(comp.location, '')";
+        var roomJoinSql = hasRooms && hasRoomPositions
+            ? $"LEFT JOIN {Quote("room_positions")} rp ON rp.computer_id = comp.id LEFT JOIN {Quote("rooms")} r ON r.id = rp.room_id"
+            : string.Empty;
+        var groupJoinSql = hasGroups && hasUserGroups
+            ? $@"LEFT JOIN {Quote("user_groups")} ug ON {(ColumnExists(connection, "user_groups", "user_id") ? "ug.user_id = u.id" : "LOWER(ug.username) = LOWER(u.username)")}
+LEFT JOIN {Quote("groups")} g ON g.group_id = ug.group_id"
+            : string.Empty;
+        var whereConditions = new List<string>
+        {
+            "ls.loginstamp <= @toUtc",
+            $"COALESCE(ls.logoutstamp, {activityReferenceExpression}) >= @fromUtc"
+        };
+        if (careerId.HasValue)
+        {
+            whereConditions.Add("u.career_id = @careerId");
+        }
+
+        if (semesterId.HasValue)
+        {
+            whereConditions.Add("u.level_id = @semesterId");
+        }
+
+        if (hasGroups && hasUserGroups && groupId.HasValue)
+        {
+            whereConditions.Add("ug.group_id = @groupId");
+        }
+
+        if (!string.IsNullOrWhiteSpace(username))
+        {
+            whereConditions.Add("LOWER(COALESCE(ls.username, '')) LIKE LOWER(@usernameLike)");
+        }
+
+        if (!string.IsNullOrWhiteSpace(sessionOrigin))
+        {
+            whereConditions.Add($"LOWER({sessionOriginExpression}) = LOWER(@sessionOrigin)");
+        }
+
+        if (!string.IsNullOrWhiteSpace(sessionState))
+        {
+            whereConditions.Add($"LOWER({sessionStateExpression}) = LOWER(@sessionState)");
+        }
+
+        using var command = CreateCommand(connection, $@"
+SELECT
+    ls.dbid,
+    ls.username,
+    COALESCE(u.first_name, '') AS first_name,
+    COALESCE(u.last_name, '') AS last_name,
+    COALESCE(u.document_id, '') AS document_id,
+    COALESCE(ca.name, '') AS career_name,
+    COALESCE(le.name, '') AS semester_name,
+    COALESCE(comp.name, ls.machine, '') AS machine_name,
+    {roomNameSql} AS room_name,
+    COALESCE(comp.inventory_tag, '') AS inventory_tag,
+    COALESCE(ls.ipaddress, comp.ip_address, '') AS ip_address,
+    {sessionStateExpression} AS session_state,
+    {sessionEndReasonExpression} AS session_end_reason,
+    {sessionOriginExpression} AS session_origin,
+    ls.loginstamp,
+    ls.logoutstamp,
+    {lastHeartbeatExpression} AS last_heartbeat_at,
+    {heartbeatAgeSql} AS heartbeat_age_seconds,
+    {groupNamesSql} AS group_names
+FROM {Quote("login_sessions")} ls
+LEFT JOIN {Quote("users")} u ON LOWER(u.username) = LOWER(ls.username)
+LEFT JOIN {Quote("careers")} ca ON ca.id = u.career_id
+LEFT JOIN {Quote("levels")} le ON le.id = u.level_id
+LEFT JOIN {Quote("computers")} comp ON LOWER(comp.name) = LOWER(ls.machine)
+    OR (comp.ip_address IS NOT NULL AND ls.ipaddress = comp.ip_address)
+{roomJoinSql}
+{groupJoinSql}
+WHERE {string.Join(Environment.NewLine + "  AND ", whereConditions)}
+GROUP BY
+    ls.dbid, ls.username, u.first_name, u.last_name, u.document_id, ca.name, le.name,
+    comp.name, ls.machine, {roomNameSql}, comp.inventory_tag, ls.ipaddress, comp.ip_address,
+    {sessionStateExpression}, {sessionEndReasonExpression}, {sessionOriginExpression}, ls.loginstamp, ls.logoutstamp, {lastHeartbeatExpression}
+ORDER BY ls.loginstamp DESC, ls.dbid DESC");
+        AddParameter(command, "@fromUtc", fromUtc);
+        AddParameter(command, "@toUtc", toUtc);
+        if (careerId.HasValue)
+        {
+            AddParameter(command, "@careerId", careerId.Value);
+        }
+
+        if (semesterId.HasValue)
+        {
+            AddParameter(command, "@semesterId", semesterId.Value);
+        }
+
+        if (hasGroups && hasUserGroups && groupId.HasValue)
+        {
+            AddParameter(command, "@groupId", groupId.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(username))
+        {
+            AddParameter(command, "@usernameLike", $"%{username.Trim()}%");
+        }
+
+        if (!string.IsNullOrWhiteSpace(sessionOrigin))
+        {
+            AddParameter(command, "@sessionOrigin", sessionOrigin.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(sessionState))
+        {
+            AddParameter(command, "@sessionState", sessionState.Trim());
+        }
+
+        var rows = new List<ReportSessionRow>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var loginStamp = ReadFlexibleDateTimeUtc(reader, 14) ?? DateTime.UtcNow;
+            var logoutStamp = ReadFlexibleDateTimeUtc(reader, 15);
+            var heartbeat = ReadFlexibleDateTimeUtc(reader, 16);
+            var heartbeatAgeSeconds = ReadFlexibleInt32(reader, 17) ?? 0;
+            var sessionStateValue = ReadFlexibleString(reader, 11);
+            var sessionEndReasonValue = ReadFlexibleString(reader, 12);
+            var sessionOriginValue = ReadFlexibleString(reader, 13);
+            var operationalStatusValue = DeriveOperationalStatus(sessionStateValue, logoutStamp, heartbeatAgeSeconds);
+            if (!string.IsNullOrWhiteSpace(operationalStatus) &&
+                !string.Equals(operationalStatusValue.ToString(), operationalStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var durationReference = logoutStamp ?? heartbeat ?? loginStamp;
+            var durationHours = Math.Max(0, (durationReference - loginStamp).TotalHours);
+            rows.Add(new ReportSessionRow
+            {
+                SessionId = ReadFlexibleInt32(reader, 0) ?? 0,
+                Username = NormalizeSessionUsername(ReadFlexibleString(reader, 1)),
+                FullName = string.Join(" ", new[] { ReadFlexibleString(reader, 2), ReadFlexibleString(reader, 3) }.Where(value => !string.IsNullOrWhiteSpace(value))).Trim(),
+                DocumentId = ReadFlexibleString(reader, 4) ?? string.Empty,
+                CareerName = CleanOptionalSessionValue(reader.IsDBNull(5) ? null : reader.GetString(5)),
+                SemesterName = CleanOptionalSessionValue(reader.IsDBNull(6) ? null : reader.GetString(6)),
+                Groups = SplitGroupNames(ReadFlexibleString(reader, 18)),
+                Machine = ReadFlexibleString(reader, 7) ?? "Sin equipo",
+                RoomName = CleanOptionalSessionValue(ReadFlexibleString(reader, 8)),
+                InventoryTag = CleanOptionalSessionValue(ReadFlexibleString(reader, 9)),
+                IpAddress = CleanOptionalSessionValue(ReadFlexibleString(reader, 10)),
+                SessionState = sessionStateValue,
+                SessionEndReason = sessionEndReasonValue,
+                SessionOrigin = sessionOriginValue,
+                OperationalStatus = operationalStatusValue.ToString(),
+                OperationalStatusLabel = RepositorySupport.TranslateOperationalStatus(operationalStatusValue),
+                LoginStamp = loginStamp,
+                LogoutStamp = logoutStamp,
+                LastHeartbeatAt = heartbeat,
+                DurationHours = Math.Round(durationHours, 2),
+                IsRecoveredOffline = string.Equals(sessionOriginValue, "offline_cache", StringComparison.OrdinalIgnoreCase),
+                IsOrphaned = operationalStatusValue == OperationalComputerStatus.Orphaned
+            });
+        }
+
+        return rows;
     }
 
     public AuditEntry RecordAudit(AuditEntryInput input)
@@ -520,25 +1096,38 @@ public sealed class SqlAdminRepository : IAdminRepository
 
     public UserAccount CreateUser(UserInput input)
     {
-        var id = NextId("users");
-        ExecuteNonQuery(
-            $"INSERT INTO {Quote("users")} (id, username, first_name, last_name, document_id, email, status, career_id, level_id, hash_method, password_hash, failed_attempts, locked_until, last_attempt_at) VALUES (@id, @username, @firstName, @lastName, @documentId, @email, @status, @careerId, @levelId, @hashMethod, @passwordHash, 0, NULL, NULL)",
-            ("@id", id),
-            ("@username", input.Username.Trim()),
-            ("@firstName", input.FirstName.Trim()),
-            ("@lastName", input.LastName.Trim()),
-            ("@documentId", input.DocumentId.Trim()),
-            ("@email", input.Email.Trim()),
-            ("@status", ToStatus(input.Active)),
-            ("@careerId", (object?)input.CareerId ?? DBNull.Value),
-            ("@levelId", (object?)input.SemesterId ?? DBNull.Value),
-            ("@hashMethod", PasswordHashService.NormalizeMethod(input.HashMethod)),
-            ("@passwordHash", PasswordHashService.HashPassword(input.Password ?? input.DocumentId.Trim(), input.HashMethod)));
+        using var connection = OpenConnection();
+        if (string.IsNullOrWhiteSpace(input.Password))
+        {
+            throw new InvalidOperationException("Debes definir una clave inicial segura al crear un usuario. No se permite usar el documento como clave por defecto.");
+        }
+
+        var id = NextId(connection, "users");
+        var username = input.Username.Trim();
+        using (var command = CreateCommand(connection,
+                   $"INSERT INTO {Quote("users")} (id, username, first_name, last_name, document_id, email, status, career_id, level_id, hash_method, password_hash, failed_attempts, locked_until, last_attempt_at) VALUES (@id, @username, @firstName, @lastName, @documentId, @email, @status, @careerId, @levelId, @hashMethod, @passwordHash, 0, NULL, NULL)"))
+        {
+            AddParameter(command, "@id", id);
+            AddParameter(command, "@username", username);
+            AddParameter(command, "@firstName", input.FirstName.Trim());
+            AddParameter(command, "@lastName", input.LastName.Trim());
+            AddParameter(command, "@documentId", input.DocumentId.Trim());
+            AddParameter(command, "@email", input.Email.Trim());
+            AddParameter(command, "@status", ToStatus(input.Active));
+            AddParameter(command, "@careerId", (object?)input.CareerId ?? DBNull.Value);
+            AddParameter(command, "@levelId", (object?)input.SemesterId ?? DBNull.Value);
+            var method = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
+            AddParameter(command, "@hashMethod", method);
+            AddParameter(command, "@passwordHash", PasswordHashService.HashPassword(input.Password.Trim(), method));
+            command.ExecuteNonQuery();
+        }
+
+        ReplaceUserGroups(connection, id, null, username, input.GroupIds);
 
         return new UserAccount
         {
             Id = id,
-            Username = input.Username.Trim(),
+            Username = username,
             FirstName = input.FirstName.Trim(),
             LastName = input.LastName.Trim(),
             Email = input.Email.Trim(),
@@ -546,12 +1135,15 @@ public sealed class SqlAdminRepository : IAdminRepository
             CareerId = input.CareerId,
             SemesterId = input.SemesterId,
             Active = input.Active,
-            HashMethod = PasswordHashService.NormalizeMethod(input.HashMethod)
+            HashMethod = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod),
+            Groups = LoadGroups(connection).Where(group => input.GroupIds.Contains(group.Id)).OrderBy(group => group.Name, StringComparer.OrdinalIgnoreCase).ToList()
         };
     }
 
     public UserAccount? UpdateUser(int id, UserInput input)
     {
+        using var connection = OpenConnection();
+        var previousUsername = LoadUsernameByUserId(connection, id);
         var sql = string.IsNullOrWhiteSpace(input.Password)
             ? $"UPDATE {Quote("users")} SET username = @username, first_name = @firstName, last_name = @lastName, document_id = @documentId, email = @email, status = @status, career_id = @careerId, level_id = @levelId, hash_method = @hashMethod WHERE id = @id"
             : $"UPDATE {Quote("users")} SET username = @username, first_name = @firstName, last_name = @lastName, document_id = @documentId, email = @email, status = @status, career_id = @careerId, level_id = @levelId, hash_method = @hashMethod, password_hash = @passwordHash WHERE id = @id";
@@ -567,19 +1159,36 @@ public sealed class SqlAdminRepository : IAdminRepository
             ("@status", ToStatus(input.Active)),
             ("@careerId", (object?)input.CareerId ?? DBNull.Value),
             ("@levelId", (object?)input.SemesterId ?? DBNull.Value),
-            ("@hashMethod", PasswordHashService.NormalizeMethod(input.HashMethod))
+            ("@hashMethod", PasswordHashService.NormalizeInteractiveMethod(input.HashMethod))
         };
         if (!string.IsNullOrWhiteSpace(input.Password))
         {
-            parameters.Add(("@passwordHash", PasswordHashService.HashPassword(input.Password, input.HashMethod)));
+            parameters.Add(("@passwordHash", PasswordHashService.HashPassword(input.Password.Trim(), PasswordHashService.NormalizeInteractiveMethod(input.HashMethod))));
         }
 
-        var affected = ExecuteNonQuery(sql, parameters.ToArray());
+        using var command = CreateCommand(connection, sql);
+        foreach (var parameter in parameters)
+        {
+            AddParameter(command, parameter.Name, parameter.Value);
+        }
+        var affected = command.ExecuteNonQuery();
 
-        return affected == 0 ? null : new UserAccount
+        if (affected == 0)
+        {
+            return null;
+        }
+
+        var username = input.Username.Trim();
+        ReplaceUserGroups(connection, id, previousUsername, username, input.GroupIds);
+        var groups = LoadGroups(connection)
+            .Where(group => input.GroupIds.Contains(group.Id))
+            .OrderBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new UserAccount
         {
             Id = id,
-            Username = input.Username.Trim(),
+            Username = username,
             FirstName = input.FirstName.Trim(),
             LastName = input.LastName.Trim(),
             Email = input.Email.Trim(),
@@ -587,14 +1196,26 @@ public sealed class SqlAdminRepository : IAdminRepository
             CareerId = input.CareerId,
             SemesterId = input.SemesterId,
             Active = input.Active,
-            HashMethod = PasswordHashService.NormalizeMethod(input.HashMethod)
+            HashMethod = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod),
+            Groups = groups
         };
     }
 
     public bool DeleteUser(int id)
     {
-        ExecuteNonQuery($"DELETE FROM {Quote("usage_records")} WHERE user_id = @id", ("@id", id));
-        return ExecuteNonQuery($"DELETE FROM {Quote("users")} WHERE id = @id", ("@id", id)) > 0;
+        using var connection = OpenConnection();
+        var username = LoadUsernameByUserId(connection, id);
+        using (var deleteUsage = CreateCommand(connection, $"DELETE FROM {Quote("usage_records")} WHERE user_id = @id"))
+        {
+            AddParameter(deleteUsage, "@id", id);
+            deleteUsage.ExecuteNonQuery();
+        }
+
+        ReplaceUserGroups(connection, id, username, username ?? string.Empty, []);
+
+        using var deleteUser = CreateCommand(connection, $"DELETE FROM {Quote("users")} WHERE id = @id");
+        AddParameter(deleteUser, "@id", id);
+        return deleteUser.ExecuteNonQuery() > 0;
     }
 
     public PasswordResetResult? ResetUserPassword(int id, PasswordResetInput input)
@@ -608,12 +1229,12 @@ public sealed class SqlAdminRepository : IAdminRepository
             return null;
         }
 
-        var method = PasswordHashService.NormalizeMethod(input.HashMethod);
+        var method = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
         var plainPassword = input.Generate || string.IsNullOrWhiteSpace(input.Password)
             ? PasswordHashService.GeneratePassword()
             : input.Password.Trim();
 
-        using var update = CreateCommand(connection, $"UPDATE {Quote("users")} SET hash_method = @hashMethod, password_hash = @passwordHash WHERE id = @id");
+        using var update = CreateCommand(connection, $"UPDATE {Quote("users")} SET hash_method = @hashMethod, password_hash = @passwordHash, failed_attempts = 0, locked_until = NULL WHERE id = @id");
         AddParameter(update, "@id", id);
         AddParameter(update, "@hashMethod", method);
         AddParameter(update, "@passwordHash", PasswordHashService.HashPassword(plainPassword, method));
@@ -739,7 +1360,7 @@ public sealed class SqlAdminRepository : IAdminRepository
                 ("@id", user.Id), ("@username", user.Username), ("@firstName", user.FirstName), ("@lastName", user.LastName),
                 ("@documentId", user.DocumentId), ("@email", user.Email), ("@status", ToStatus(user.Active)),
                 ("@careerId", (object?)user.CareerId ?? DBNull.Value), ("@levelId", (object?)user.SemesterId ?? DBNull.Value),
-                ("@hashMethod", PasswordHashService.NormalizeMethod(user.HashMethod)), ("@passwordHash", user.PasswordHash ?? PasswordHashService.HashPassword(user.DocumentId, user.HashMethod)));
+                ("@hashMethod", PasswordHashService.NormalizeMethod(user.HashMethod)), ("@passwordHash", user.PasswordHash ?? PasswordHashService.HashPassword(PasswordHashService.GeneratePassword(), user.HashMethod)));
         }
 
         foreach (var computer in snapshot.Computers)
@@ -868,9 +1489,26 @@ public sealed class SqlAdminRepository : IAdminRepository
             return [];
         }
 
+        var hasClientSessionId = ColumnExists(connection, "login_sessions", "client_session_id");
+        var hasWindowsSessionId = ColumnExists(connection, "login_sessions", "windows_session_id");
+        var hasSessionState = ColumnExists(connection, "login_sessions", "session_state");
+        var hasLastHeartbeatAt = ColumnExists(connection, "login_sessions", "last_heartbeat_at");
+        var hasSessionEndReason = ColumnExists(connection, "login_sessions", "session_end_reason");
+        var hasSessionOrigin = ColumnExists(connection, "login_sessions", "session_origin");
+        var clientSessionIdExpression = hasClientSessionId ? "client_session_id" : "NULL";
+        var windowsSessionIdExpression = hasWindowsSessionId ? "windows_session_id" : "NULL";
+        var sessionStateExpression = hasSessionState ? "session_state" : "NULL";
+        var lastHeartbeatExpression = hasLastHeartbeatAt ? "last_heartbeat_at" : "NULL";
+        var sessionEndReasonExpression = hasSessionEndReason ? "session_end_reason" : "NULL";
+        var sessionOriginExpression = hasSessionOrigin ? "session_origin" : "NULL";
+        var activityReferenceExpression = hasLastHeartbeatAt ? "COALESCE(last_heartbeat_at, loginstamp)" : "loginstamp";
+        var heartbeatAgeSql = _isPostgreSql
+            ? $"GREATEST(0, EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - {activityReferenceExpression})))::INT"
+            : $"GREATEST(0, TIMESTAMPDIFF(SECOND, {activityReferenceExpression}, CURRENT_TIMESTAMP))";
+
         var latestSessions = new List<LoginSessionSnapshot>();
         var latestByKey = new Dictionary<string, LoginSessionSnapshot>(StringComparer.OrdinalIgnoreCase);
-        using (var command = CreateCommand(connection, $"SELECT dbid, loginstamp, logoutstamp, username, machine, ipaddress, client_session_id, windows_session_id, session_state, last_heartbeat_at, session_end_reason FROM {Quote("login_sessions")} ORDER BY COALESCE(last_heartbeat_at, loginstamp) DESC, loginstamp DESC, dbid DESC"))
+        using (var command = CreateCommand(connection, $"SELECT dbid, loginstamp, logoutstamp, username, machine, ipaddress, {clientSessionIdExpression} AS client_session_id, {windowsSessionIdExpression} AS windows_session_id, {sessionStateExpression} AS session_state, {lastHeartbeatExpression} AS last_heartbeat_at, {sessionEndReasonExpression} AS session_end_reason, {sessionOriginExpression} AS session_origin, {heartbeatAgeSql} AS heartbeat_age_seconds FROM {Quote("login_sessions")} ORDER BY {activityReferenceExpression} DESC, loginstamp DESC, dbid DESC"))
         using (var reader = command.ExecuteReader())
         {
             while (reader.Read())
@@ -887,7 +1525,9 @@ public sealed class SqlAdminRepository : IAdminRepository
                     WindowsSessionId = ReadFlexibleInt32(reader, 7),
                     SessionState = ReadFlexibleString(reader, 8),
                     LastHeartbeatAt = ReadFlexibleDateTimeUtc(reader, 9),
-                    SessionEndReason = ReadFlexibleString(reader, 10)
+                    SessionEndReason = ReadFlexibleString(reader, 10),
+                    SessionOrigin = ReadFlexibleString(reader, 11),
+                    HeartbeatAgeSeconds = ReadFlexibleInt32(reader, 12)
                 };
 
                 var sessionKey = BuildSessionLookupKey(session);
@@ -904,6 +1544,183 @@ public sealed class SqlAdminRepository : IAdminRepository
         return latestSessions;
     }
 
+    private static string TranslateSessionStateLabel(string? sessionState)
+    {
+        return sessionState?.Trim().ToLowerInvariant() switch
+        {
+            "active" => "Activa",
+            "locked" => "Bloqueada",
+            "disconnected" => "Desconectada",
+            "ended" => "Finalizada",
+            _ => string.IsNullOrWhiteSpace(sessionState) ? "Sin estado" : sessionState.Trim()
+        };
+    }
+
+    private List<GroupInfo> LoadGroups(DbConnection connection)
+    {
+        if (!TableExists(connection, "groups"))
+        {
+            return [];
+        }
+
+        var idColumn = ResolveColumnName(connection, "groups", "group_id", "groupid", "id");
+        var nameColumn = ResolveColumnName(connection, "groups", "group_name", "groupname", "name");
+        if (idColumn is null || nameColumn is null)
+        {
+            return [];
+        }
+
+        var groups = new List<GroupInfo>();
+        using var command = CreateCommand(connection, $"SELECT {Quote(idColumn)}, {Quote(nameColumn)} FROM {Quote("groups")} ORDER BY {Quote(nameColumn)}");
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var id = ReadFlexibleInt32(reader, 0);
+            var name = ReadFlexibleString(reader, 1);
+            if (!id.HasValue || string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            groups.Add(new GroupInfo
+            {
+                Id = id.Value,
+                Name = name
+            });
+        }
+
+        return groups;
+    }
+
+    private string? LoadLookupName(DbConnection connection, string tableName, int? id)
+    {
+        if (!id.HasValue || !TableExists(connection, tableName))
+        {
+            return null;
+        }
+
+        using var command = CreateCommand(connection, $"SELECT name FROM {Quote(tableName)} WHERE id = @id");
+        AddParameter(command, "@id", id.Value);
+        return RepositorySupport.CleanOptional(Convert.ToString(command.ExecuteScalar()));
+    }
+
+    private void CleanupPortalResetTokens(DbConnection connection)
+    {
+        if (!HasPortalResetTokenSchema(connection))
+        {
+            return;
+        }
+
+        using var command = CreateCommand(connection,
+            $"DELETE FROM {Quote("portal_password_reset_tokens")} WHERE consumed_utc IS NOT NULL OR expires_utc < @nowUtc");
+        AddParameter(command, "@nowUtc", DateTime.UtcNow);
+        command.ExecuteNonQuery();
+    }
+
+    private bool HasPortalResetTokenSchema(DbConnection connection)
+    {
+        return TableExists(connection, "portal_password_reset_tokens")
+               && ColumnExists(connection, "portal_password_reset_tokens", "user_id")
+               && ColumnExists(connection, "portal_password_reset_tokens", "username")
+               && ColumnExists(connection, "portal_password_reset_tokens", "email")
+               && ColumnExists(connection, "portal_password_reset_tokens", "reset_token")
+               && ColumnExists(connection, "portal_password_reset_tokens", "created_utc")
+               && ColumnExists(connection, "portal_password_reset_tokens", "expires_utc")
+               && ColumnExists(connection, "portal_password_reset_tokens", "consumed_utc");
+    }
+
+    private void ApplyGroupsToUsers(DbConnection connection, List<UserAccount> users, IReadOnlyCollection<GroupInfo> groups)
+    {
+        foreach (var user in users)
+        {
+            user.Groups = [];
+        }
+
+        if (users.Count == 0 || groups.Count == 0 || !TableExists(connection, "user_groups"))
+        {
+            return;
+        }
+
+        var groupIdColumn = ResolveColumnName(connection, "user_groups", "group_id", "groupid");
+        var userIdColumn = ResolveColumnName(connection, "user_groups", "user_id", "userid");
+        var usernameColumn = ResolveColumnName(connection, "user_groups", "username", "user_username");
+        if (groupIdColumn is null || (userIdColumn is null && usernameColumn is null))
+        {
+            return;
+        }
+
+        var usersById = users.ToDictionary(user => user.Id);
+        var usersByUsername = users
+            .GroupBy(user => user.Username, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var groupsById = groups.ToDictionary(group => group.Id);
+
+        var selectedColumns = new List<string>();
+        if (userIdColumn is not null)
+        {
+            selectedColumns.Add(Quote(userIdColumn));
+        }
+        if (usernameColumn is not null)
+        {
+            selectedColumns.Add(Quote(usernameColumn));
+        }
+        selectedColumns.Add(Quote(groupIdColumn));
+
+        using var command = CreateCommand(connection, $"SELECT {string.Join(", ", selectedColumns)} FROM {Quote("user_groups")}");
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var offset = 0;
+            int? userId = null;
+            string? username = null;
+
+            if (userIdColumn is not null)
+            {
+                userId = ReadFlexibleInt32(reader, offset++);
+            }
+
+            if (usernameColumn is not null)
+            {
+                username = ReadFlexibleString(reader, offset++);
+            }
+
+            var groupId = ReadFlexibleInt32(reader, offset);
+            if (!groupId.HasValue || !groupsById.TryGetValue(groupId.Value, out var group))
+            {
+                continue;
+            }
+
+            UserAccount? user = null;
+            if (userId.HasValue)
+            {
+                usersById.TryGetValue(userId.Value, out user);
+            }
+
+            if (user is null && !string.IsNullOrWhiteSpace(username))
+            {
+                usersByUsername.TryGetValue(username.Trim(), out user);
+            }
+
+            if (user is null || user.Groups.Any(item => item.Id == group.Id))
+            {
+                continue;
+            }
+
+            user.Groups.Add(new GroupInfo
+            {
+                Id = group.Id,
+                Name = group.Name
+            });
+        }
+
+        foreach (var user in users)
+        {
+            user.Groups = user.Groups
+                .OrderBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+    }
+
     private void EnsureComputersDiscoveredFromSessions(DbConnection connection, IReadOnlyCollection<LoginSessionSnapshot> latestSessions)
     {
         var discoveryCutoff = DateTime.UtcNow - HeartbeatStaleThreshold;
@@ -916,11 +1733,13 @@ public sealed class SqlAdminRepository : IAdminRepository
             var existingId = FindComputerId(connection, session.Machine!, session.IpAddress);
             if (existingId.HasValue)
             {
+                var currentIpAddress = LoadComputerIpAddress(connection, existingId.Value);
+                var preferredIpAddress = SelectPreferredComputerIpAddress(currentIpAddress, session.IpAddress);
                 using var update = CreateCommand(connection,
                     $"UPDATE {Quote("computers")} SET name = @name, ip_address = @ip, last_seen_utc = @lastSeen WHERE id = @id");
                 AddParameter(update, "@id", existingId.Value);
                 AddParameter(update, "@name", session.Machine!);
-                AddParameter(update, "@ip", string.IsNullOrWhiteSpace(session.IpAddress) ? DBNull.Value : session.IpAddress!);
+                AddParameter(update, "@ip", (object?)preferredIpAddress ?? DBNull.Value);
                 AddParameter(update, "@lastSeen", (object?)(session.LastHeartbeatAt ?? session.LoginStamp) ?? DBNull.Value);
                 update.ExecuteNonQuery();
             }
@@ -939,6 +1758,49 @@ public sealed class SqlAdminRepository : IAdminRepository
                 insert.ExecuteNonQuery();
             }
         }
+    }
+
+    private string? LoadComputerIpAddress(DbConnection connection, int id)
+    {
+        using var command = CreateCommand(connection, $"SELECT ip_address FROM {Quote("computers")} WHERE id = @id");
+        AddParameter(command, "@id", id);
+        return RepositorySupport.CleanOptional(Convert.ToString(command.ExecuteScalar()));
+    }
+
+    private static string? SelectPreferredComputerIpAddress(string? currentIpAddress, string? detectedIpAddress)
+    {
+        var current = RepositorySupport.CleanOptional(currentIpAddress);
+        var detected = RepositorySupport.CleanOptional(detectedIpAddress);
+
+        if (string.IsNullOrWhiteSpace(detected))
+        {
+            return current;
+        }
+
+        if (string.IsNullOrWhiteSpace(current))
+        {
+            return detected;
+        }
+
+        var currentIsLinkLocal = IsLinkLocalAutoConfiguredIp(current);
+        var detectedIsLinkLocal = IsLinkLocalAutoConfiguredIp(detected);
+
+        if (detectedIsLinkLocal && !currentIsLinkLocal)
+        {
+            return current;
+        }
+
+        if (!detectedIsLinkLocal && currentIsLinkLocal)
+        {
+            return detected;
+        }
+
+        return current;
+    }
+
+    private static bool IsLinkLocalAutoConfiguredIp(string value)
+    {
+        return value.StartsWith("169.254.", StringComparison.OrdinalIgnoreCase);
     }
 
     private List<ComputedComputerState> BuildComputedComputerStates(IReadOnlyCollection<Computer> computers, IReadOnlyCollection<LoginSessionSnapshot> latestSessions)
@@ -1028,8 +1890,9 @@ public sealed class SqlAdminRepository : IAdminRepository
                 "La ultima sesion ya fue cerrada correctamente.");
         }
 
-        var heartbeatReference = session.LastHeartbeatAt ?? session.LoginStamp;
-        var heartbeatAge = nowUtc - heartbeatReference;
+        var heartbeatSeconds = session.HeartbeatAgeSeconds
+            ?? Math.Max(0, (int)Math.Floor((nowUtc - (session.LastHeartbeatAt ?? session.LoginStamp)).TotalSeconds));
+        var heartbeatAge = TimeSpan.FromSeconds(heartbeatSeconds);
         var isStale = heartbeatAge > HeartbeatFreshThreshold;
         var isOrphaned = heartbeatAge > HeartbeatStaleThreshold;
 
@@ -1065,6 +1928,12 @@ public sealed class SqlAdminRepository : IAdminRepository
             _ => "Estado de sesion no reconocido; requiere revision."
         };
 
+        if (operationalStatus == OperationalComputerStatus.Occupied &&
+            string.Equals(session.SessionOrigin, "offline_cache", StringComparison.OrdinalIgnoreCase))
+        {
+            statusReason = "Sesion activa sincronizada desde cache offline con heartbeat reciente.";
+        }
+
         return CreateComputedComputerState(
             computer,
             session,
@@ -1086,7 +1955,14 @@ public sealed class SqlAdminRepository : IAdminRepository
     {
         var heartbeatSeconds = heartbeatAge.HasValue
             ? Math.Max(0, (int)Math.Floor(heartbeatAge.Value.TotalSeconds))
-            : (int?)null;
+            : session?.HeartbeatAgeSeconds;
+        var sessionOrigin = CleanOptionalSessionValue(session?.SessionOrigin);
+        var originLabel = TranslateSessionOrigin(sessionOrigin);
+        var isRecoveredOffline = string.Equals(sessionOrigin, "offline_cache", StringComparison.OrdinalIgnoreCase);
+        var isSuperseded = string.Equals(session?.SessionEndReason, "superseded_by_logon", StringComparison.OrdinalIgnoreCase);
+        var isUnexpectedShutdown = string.Equals(session?.SessionEndReason, "unexpected_shutdown", StringComparison.OrdinalIgnoreCase);
+        var isHeartbeatTimeout = string.Equals(session?.SessionEndReason, "heartbeat_timeout", StringComparison.OrdinalIgnoreCase);
+        var alertFlags = BuildAlertFlags(isRecoveredOffline, isSuperseded, isUnexpectedShutdown, isHeartbeatTimeout, isOrphaned);
 
         return new ComputedComputerState
         {
@@ -1108,9 +1984,17 @@ public sealed class SqlAdminRepository : IAdminRepository
             LogoutStamp = session?.LogoutStamp,
             LastHeartbeatAt = session?.LastHeartbeatAt,
             SessionEndReason = CleanOptionalSessionValue(session?.SessionEndReason),
+            SessionOrigin = sessionOrigin,
+            OriginLabel = originLabel,
+            AlertFlags = alertFlags,
             HeartbeatAgeSeconds = heartbeatSeconds,
             IsStale = isStale,
             IsOrphaned = isOrphaned,
+            HasRecoveredOfflineSession = isRecoveredOffline,
+            HasSessionWarning = alertFlags.Count > 0,
+            IsSuperseded = isSuperseded,
+            IsUnexpectedShutdown = isUnexpectedShutdown,
+            IsHeartbeatTimeout = isHeartbeatTimeout,
             LastSeenUtc = session?.LastHeartbeatAt ?? session?.LoginStamp ?? computer.LastSeenUtc
         };
     }
@@ -1133,6 +2017,80 @@ public sealed class SqlAdminRepository : IAdminRepository
     private static string? CleanOptionalSessionValue(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string? TranslateSessionOrigin(string? origin)
+    {
+        return origin?.Trim().ToLowerInvariant() switch
+        {
+            "online" => "Online",
+            "offline_cache" => "Offline recuperado",
+            _ => CleanOptionalSessionValue(origin)
+        };
+    }
+
+    private static List<string> BuildAlertFlags(
+        bool isRecoveredOffline,
+        bool isSuperseded,
+        bool isUnexpectedShutdown,
+        bool isHeartbeatTimeout,
+        bool isOrphaned)
+    {
+        var flags = new List<string>();
+        if (isRecoveredOffline)
+        {
+            flags.Add("offline_recovered");
+        }
+        if (isSuperseded)
+        {
+            flags.Add("superseded_by_logon");
+        }
+        if (isUnexpectedShutdown)
+        {
+            flags.Add("unexpected_shutdown");
+        }
+        if (isHeartbeatTimeout)
+        {
+            flags.Add("heartbeat_timeout");
+        }
+        if (isOrphaned)
+        {
+            flags.Add("orphaned");
+        }
+
+        return flags;
+    }
+
+    private static OperationalComputerStatus DeriveOperationalStatus(string? sessionState, DateTime? logoutStamp, int heartbeatAgeSeconds)
+    {
+        if (logoutStamp.HasValue || string.Equals(sessionState, "ended", StringComparison.OrdinalIgnoreCase))
+        {
+            return OperationalComputerStatus.Available;
+        }
+
+        if (heartbeatAgeSeconds > HeartbeatStaleThreshold.TotalSeconds)
+        {
+            return OperationalComputerStatus.Orphaned;
+        }
+
+        return (sessionState ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "active" => OperationalComputerStatus.Occupied,
+            "locked" => OperationalComputerStatus.Locked,
+            "disconnected" => OperationalComputerStatus.Disconnected,
+            _ => OperationalComputerStatus.Orphaned
+        };
+    }
+
+    private static List<string> SplitGroupNames(string? groupNames)
+    {
+        return string.IsNullOrWhiteSpace(groupNames)
+            ? []
+            : groupNames
+                .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToList();
     }
 
     private static string? ReadFlexibleString(DbDataReader reader, int ordinal)
@@ -1174,11 +2132,48 @@ public sealed class SqlAdminRepository : IAdminRepository
         var value = reader.GetValue(ordinal);
         return value switch
         {
-            DateTime dateTime => DateTime.SpecifyKind(dateTime, DateTimeKind.Utc),
+            DateTime dateTime => NormalizeDatabaseDateTimeUtc(dateTime),
             DateTimeOffset offset => offset.UtcDateTime,
-            _ when DateTime.TryParse(Convert.ToString(value), out var parsed) => DateTime.SpecifyKind(parsed, DateTimeKind.Utc),
+            _ when DateTime.TryParse(
+                Convert.ToString(value),
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeLocal,
+                out var parsed) => NormalizeDatabaseDateTimeUtc(parsed),
             _ => null
         };
+    }
+
+    private static DateTime NormalizeDatabaseDateTimeUtc(DateTime value)
+    {
+        return value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => TimeZoneInfo.ConvertTimeToUtc(value, LoginSessionTimeZone)
+        };
+    }
+
+    private static TimeZoneInfo ResolveLoginSessionTimeZone()
+    {
+        var candidates = new[]
+        {
+            "America/Bogota",
+            "SA Pacific Standard Time"
+        };
+
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById(candidate);
+            }
+            catch
+            {
+                // Prueba siguiente identificador compatible con el sistema actual.
+            }
+        }
+
+        return TimeZoneInfo.Local;
     }
 
     private static ComputerStatus MapOperationalToLegacyStatus(OperationalComputerStatus status)
@@ -1201,6 +2196,98 @@ public sealed class SqlAdminRepository : IAdminRepository
         return value is null ? null : Convert.ToInt32(value);
     }
 
+    private string? LoadUsernameByUserId(DbConnection connection, int userId)
+    {
+        using var command = CreateCommand(connection, $"SELECT username FROM {Quote("users")} WHERE id = @id");
+        AddParameter(command, "@id", userId);
+        return Convert.ToString(command.ExecuteScalar())?.Trim();
+    }
+
+    private void ReplaceUserGroups(DbConnection connection, int userId, string? previousUsername, string currentUsername, IEnumerable<int> groupIds)
+    {
+        if (!TableExists(connection, "user_groups"))
+        {
+            return;
+        }
+
+        var groupIdColumn = ResolveColumnName(connection, "user_groups", "group_id", "groupid");
+        var userIdColumn = ResolveColumnName(connection, "user_groups", "user_id", "userid");
+        var usernameColumn = ResolveColumnName(connection, "user_groups", "username", "user_username");
+        if (groupIdColumn is null || (userIdColumn is null && usernameColumn is null))
+        {
+            return;
+        }
+
+        using (var delete = CreateCommand(connection, BuildDeleteUserGroupsSql(userIdColumn, usernameColumn)))
+        {
+            if (userIdColumn is not null)
+            {
+                AddParameter(delete, "@userId", userId);
+            }
+            if (usernameColumn is not null)
+            {
+                AddParameter(delete, "@username", previousUsername ?? currentUsername);
+            }
+            delete.ExecuteNonQuery();
+        }
+
+        foreach (var groupId in groupIds.Where(groupId => groupId > 0).Distinct())
+        {
+            var columns = new List<string>();
+            var values = new List<string>();
+            using var insert = CreateCommand(connection, string.Empty);
+
+            if (userIdColumn is not null)
+            {
+                columns.Add(Quote(userIdColumn));
+                values.Add("@userId");
+                AddParameter(insert, "@userId", userId);
+            }
+
+            if (usernameColumn is not null)
+            {
+                columns.Add(Quote(usernameColumn));
+                values.Add("@username");
+                AddParameter(insert, "@username", currentUsername);
+            }
+
+            columns.Add(Quote(groupIdColumn));
+            values.Add("@groupId");
+            AddParameter(insert, "@groupId", groupId);
+
+            insert.CommandText = $"INSERT INTO {Quote("user_groups")} ({string.Join(", ", columns)}) VALUES ({string.Join(", ", values)})";
+            insert.ExecuteNonQuery();
+        }
+    }
+
+    private string BuildDeleteUserGroupsSql(string? userIdColumn, string? usernameColumn)
+    {
+        var predicates = new List<string>();
+        if (userIdColumn is not null)
+        {
+            predicates.Add($"{Quote(userIdColumn)} = @userId");
+        }
+        if (usernameColumn is not null)
+        {
+            predicates.Add($"LOWER({Quote(usernameColumn)}) = LOWER(@username)");
+        }
+
+        return $"DELETE FROM {Quote("user_groups")} WHERE {string.Join(" OR ", predicates)}";
+    }
+
+    private string? ResolveColumnName(DbConnection connection, string table, params string[] candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (ColumnExists(connection, table, candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
     private bool TableExists(DbConnection connection, string table)
     {
         using var command = CreateCommand(connection,
@@ -1211,9 +2298,50 @@ public sealed class SqlAdminRepository : IAdminRepository
         return Convert.ToInt32(command.ExecuteScalar()) > 0;
     }
 
+    private bool ColumnExists(DbConnection connection, string table, string column)
+    {
+        using var command = CreateCommand(connection,
+            _isPostgreSql
+                ? "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = @table AND column_name = @column"
+                : "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = @table AND column_name = @column");
+        AddParameter(command, "@table", table);
+        AddParameter(command, "@column", column);
+        return Convert.ToInt32(command.ExecuteScalar()) > 0;
+    }
+
     private static bool ReadIntAsBool(IDataRecord record, int ordinal)
     {
         return !record.IsDBNull(ordinal) && Convert.ToInt32(record.GetValue(ordinal)) == 1;
+    }
+
+    private static bool ReadStatusAsBool(IDataRecord record, int ordinal)
+    {
+        if (record.IsDBNull(ordinal))
+        {
+            return false;
+        }
+
+        var value = record.GetValue(ordinal);
+        if (value is bool boolValue)
+        {
+            return boolValue;
+        }
+
+        if (value is string text)
+        {
+            var normalized = text.Trim().ToLowerInvariant();
+            if (normalized is "1" or "true" or "activo" or "active" or "enabled")
+            {
+                return true;
+            }
+
+            if (normalized is "0" or "false" or "inactivo" or "inactive" or "disabled")
+            {
+                return false;
+            }
+        }
+
+        return Convert.ToInt32(value) == 1;
     }
 
     private static RoomLayoutItemType ParseRoomLayoutItemType(string? value)
@@ -1231,6 +2359,24 @@ public sealed class SqlAdminRepository : IAdminRepository
     private static int NormalizeCapacity(int value)
     {
         return Math.Clamp(value, 1, 6);
+    }
+
+    private static string NormalizeSessionUsername(string? value)
+    {
+        var normalized = value?.Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return "Sin usuario identificado";
+        }
+
+        if (normalized.Equals("--UNKNOWN--", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("-UNKNOWN-", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("UNKNOWN", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Sin usuario identificado";
+        }
+
+        return normalized;
     }
 
     private static int ToStatus(bool active) => active ? 1 : 0;
