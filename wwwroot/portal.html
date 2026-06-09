@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenCredential Portal de Usuario</title>
+    <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="portal-page">
+    <div class="portal-auth-shell" id="portalAuthShell">
+        <section class="login-card portal-login-card">
+            <p class="eyebrow">Portal de usuario</p>
+            <h1>Accede a tu perfil de OpenCredential.</h1>
+            <p class="login-copy">
+                Consulta tus accesos, actualiza tus datos personales y cambia tu clave sin entrar a la consola administrativa.
+            </p>
+            <div class="portal-auth-switch">
+                <button type="button" class="portal-auth-tab is-active" data-portal-auth-view="login">Ingresar</button>
+                <button type="button" class="portal-auth-tab" data-portal-auth-view="recover">Recuperar clave</button>
+                <button type="button" class="portal-auth-tab" data-portal-auth-view="reset">Usar token</button>
+            </div>
+
+            <form id="portalLoginForm" class="stack-form portal-auth-form is-active">
+                <input type="text" id="portalLoginUsername" placeholder="Usuario" required />
+                <input type="password" id="portalLoginPassword" placeholder="Clave" required />
+                <button type="submit" class="btn btn-primary btn-block">Entrar al portal</button>
+            </form>
+
+            <form id="portalRecoveryForm" class="stack-form portal-auth-form" hidden>
+                <input type="text" id="portalRecoveryUsername" placeholder="Usuario" required />
+                <input type="text" id="portalRecoveryDocument" placeholder="Documento" required />
+                <input type="email" id="portalRecoveryEmail" placeholder="Correo institucional" required />
+                <button type="submit" class="btn btn-secondary btn-block">Solicitar token</button>
+            </form>
+
+            <form id="portalResetForm" class="stack-form portal-auth-form" hidden>
+                <input type="text" id="portalResetToken" placeholder="Token de recuperacion" required />
+                <input type="password" id="portalResetNewPassword" placeholder="Nueva clave" required />
+                <input type="password" id="portalResetConfirmPassword" placeholder="Confirmar nueva clave" required />
+                <button type="submit" class="btn btn-primary btn-block">Restablecer clave</button>
+            </form>
+
+            <p class="support-text" id="portalAuthResult">Inicia sesion para continuar.</p>
+            <a class="link-button" href="/">Ir a la consola administrativa</a>
+        </section>
+    </div>
+
+    <div class="portal-shell is-hidden" id="portalShell">
+        <header class="portal-topbar">
+            <div>
+                <p class="eyebrow">OpenCredential</p>
+                <h1>Portal de usuario</h1>
+            </div>
+            <div class="portal-topbar-actions">
+                <span class="status-chip" id="portalSessionBadge">Sesion no iniciada</span>
+                <button type="button" class="btn btn-secondary" id="portalLogoutBtn">Cerrar sesion</button>
+            </div>
+        </header>
+
+        <main class="portal-main">
+            <section class="portal-hero card">
+                <div>
+                    <p class="section-label">Mi cuenta</p>
+                    <h2 id="portalHeroName">Cargando perfil...</h2>
+                    <p class="section-copy" id="portalHeroCopy">Consulta tu informacion, cambia tu clave y revisa tus sesiones recientes.</p>
+                    <div class="group-badges" id="portalHeroGroups"></div>
+                </div>
+                <div class="portal-tabs">
+                    <button type="button" class="portal-tab is-active" data-portal-view="profile">Mi perfil</button>
+                    <button type="button" class="portal-tab" data-portal-view="security">Seguridad</button>
+                    <button type="button" class="portal-tab" data-portal-view="sessions">Mis accesos</button>
+                </div>
+            </section>
+
+            <section class="portal-view is-active" id="portalProfileView">
+                <div class="portal-grid">
+                    <article class="card portal-card">
+                        <div class="section-head">
+                            <div>
+                                <p class="section-label">Perfil</p>
+                                <h3>Datos personales</h3>
+                            </div>
+                        </div>
+                        <form id="portalProfileForm" class="stack-form">
+                            <label>
+                                Usuario
+                                <input type="text" id="portalProfileUsername" readonly />
+                            </label>
+                            <label>
+                                Documento
+                                <input type="text" id="portalProfileDocument" readonly />
+                            </label>
+                            <label>
+                                Nombres
+                                <input type="text" id="portalProfileFirstName" required />
+                            </label>
+                            <label>
+                                Apellidos
+                                <input type="text" id="portalProfileLastName" required />
+                            </label>
+                            <label>
+                                Correo institucional
+                                <input type="email" id="portalProfileEmail" required />
+                            </label>
+                            <div class="portal-actions-row">
+                                <button type="submit" class="btn btn-primary">Guardar cambios</button>
+                            </div>
+                            <p class="support-text" id="portalProfileResult"></p>
+                        </form>
+                    </article>
+
+                    <article class="card portal-card">
+                        <div class="section-head">
+                            <div>
+                                <p class="section-label">Academico</p>
+                                <h3>Datos de referencia</h3>
+                            </div>
+                        </div>
+                        <dl class="portal-kv-list">
+                            <div>
+                                <dt>Carrera</dt>
+                                <dd id="portalProfileCareer">Sin carrera</dd>
+                            </div>
+                            <div>
+                                <dt>Semestre</dt>
+                                <dd id="portalProfileSemester">Sin semestre</dd>
+                            </div>
+                            <div>
+                                <dt>Estado</dt>
+                                <dd id="portalProfileStatus">Activo</dd>
+                            </div>
+                        </dl>
+                        <div>
+                            <p class="section-label">Grupos</p>
+                            <div class="group-badges" id="portalProfileGroups"></div>
+                        </div>
+                    </article>
+                </div>
+            </section>
+
+            <section class="portal-view" id="portalSecurityView">
+                <div class="portal-grid">
+                    <article class="card portal-card">
+                        <div class="section-head">
+                            <div>
+                                <p class="section-label">Seguridad</p>
+                                <h3>Cambiar clave</h3>
+                            </div>
+                        </div>
+                        <form id="portalPasswordForm" class="stack-form">
+                            <label>
+                                Clave actual
+                                <input type="password" id="portalCurrentPassword" required />
+                            </label>
+                            <label>
+                                Nueva clave
+                                <input type="password" id="portalNewPassword" required />
+                            </label>
+                            <label>
+                                Confirmar nueva clave
+                                <input type="password" id="portalConfirmPassword" required />
+                            </label>
+                            <div class="portal-actions-row">
+                                <button type="submit" class="btn btn-primary">Actualizar clave</button>
+                            </div>
+                            <p class="support-text" id="portalPasswordResult"></p>
+                        </form>
+                    </article>
+
+                    <article class="card portal-card">
+                        <div class="section-head">
+                            <div>
+                                <p class="section-label">Seguridad</p>
+                                <h3>Recomendaciones</h3>
+                            </div>
+                        </div>
+                        <ul class="portal-hints">
+                            <li>Usa una clave unica y evita reutilizarla en otros servicios.</li>
+                            <li>Si restableciste tu clave, actualizala de inmediato y no la compartas.</li>
+                            <li>Si observas accesos que no reconoces, informa al administrador del laboratorio.</li>
+                        </ul>
+                    </article>
+                </div>
+            </section>
+
+            <section class="portal-view" id="portalSessionsView">
+                <article class="card portal-card">
+                    <div class="section-head">
+                        <div>
+                            <p class="section-label">Historial</p>
+                            <h3>Mis accesos recientes</h3>
+                        </div>
+                    </div>
+                    <div class="table-host" id="portalSessionsTable"></div>
+                </article>
+            </section>
+        </main>
+    </div>
+
+    <script src="/portal.js"></script>
+</body>
+</html>

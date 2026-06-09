@@ -39,6 +39,363 @@ public sealed class JsonAdminRepository : IAdminRepository
         }
     }
 
+    public ReportsResponse GetReports(DateTime fromUtc, DateTime toUtc, int? careerId, int? semesterId, int? groupId, string? username, string? sessionOrigin, string? sessionState, string? operationalStatus)
+    {
+        lock (_sync)
+        {
+            var snapshot = Clone(_snapshot);
+            var usersById = snapshot.Users.ToDictionary(item => item.Id);
+            var careersById = snapshot.Careers.ToDictionary(item => item.Id);
+            var semestersById = snapshot.Semesters.ToDictionary(item => item.Id);
+            var computersById = snapshot.Computers.ToDictionary(item => item.Id);
+            var roomByComputerId = snapshot.RoomLayoutItems
+                .Where(item => item.ComputerId.HasValue)
+                .Join(snapshot.Rooms, item => item.RoomId, room => room.Id, (item, room) => new { item.ComputerId, room.Name })
+                .GroupBy(item => item.ComputerId!.Value)
+                .ToDictionary(group => group.Key, group => group.First().Name);
+
+            var rows = snapshot.UsageRecords
+                .Where(item => item.StartUtc <= toUtc && item.EndUtc >= fromUtc)
+                .Select(item =>
+                {
+                    usersById.TryGetValue(item.UserId, out var user);
+                    computersById.TryGetValue(item.ComputerId, out var computer);
+                    var groups = user?.Groups.Select(group => group.Name).OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList() ?? [];
+                    return new ReportSessionRow
+                    {
+                        SessionId = item.Id,
+                        Username = user?.Username ?? $"user-{item.UserId}",
+                        FullName = user is null ? string.Empty : $"{user.FirstName} {user.LastName}".Trim(),
+                        DocumentId = user?.DocumentId ?? string.Empty,
+                        CareerName = user?.CareerId is { } careerIdValue && careersById.TryGetValue(careerIdValue, out var career) ? career.Name : null,
+                        SemesterName = user?.SemesterId is { } semesterIdValue && semestersById.TryGetValue(semesterIdValue, out var semester) ? semester.Name : null,
+                        Groups = groups,
+                        Machine = computer?.Name ?? $"equipo-{item.ComputerId}",
+                        RoomName = computersById.TryGetValue(item.ComputerId, out var mappedComputer) && roomByComputerId.TryGetValue(item.ComputerId, out var roomName) ? roomName : mappedComputer?.Location,
+                        InventoryTag = computer?.InventoryTag,
+                        IpAddress = computer?.IpAddress,
+                        SessionState = "ended",
+                        SessionOrigin = "online",
+                        OperationalStatus = OperationalComputerStatus.Available.ToString(),
+                        OperationalStatusLabel = RepositorySupport.TranslateOperationalStatus(OperationalComputerStatus.Available),
+                        LoginStamp = item.StartUtc,
+                        LogoutStamp = item.EndUtc,
+                        DurationHours = Math.Round(Math.Max(0, (item.EndUtc - item.StartUtc).TotalHours), 2),
+                        IsRecoveredOffline = false,
+                        IsOrphaned = false
+                    };
+                })
+                .Where(item => !careerId.HasValue || string.Equals(item.CareerName, snapshot.Careers.FirstOrDefault(c => c.Id == careerId.Value)?.Name, StringComparison.OrdinalIgnoreCase))
+                .Where(item => !semesterId.HasValue || string.Equals(item.SemesterName, snapshot.Semesters.FirstOrDefault(s => s.Id == semesterId.Value)?.Name, StringComparison.OrdinalIgnoreCase))
+                .Where(item => !groupId.HasValue || item.Groups.Any(group => string.Equals(group, snapshot.Groups.FirstOrDefault(entry => entry.Id == groupId.Value)?.Name, StringComparison.OrdinalIgnoreCase)))
+                .Where(item => string.IsNullOrWhiteSpace(username) || item.Username.Contains(username.Trim(), StringComparison.OrdinalIgnoreCase) || item.FullName.Contains(username.Trim(), StringComparison.OrdinalIgnoreCase))
+                .Where(item => string.IsNullOrWhiteSpace(sessionOrigin) || string.Equals(item.SessionOrigin, sessionOrigin, StringComparison.OrdinalIgnoreCase))
+                .Where(item => string.IsNullOrWhiteSpace(sessionState) || string.Equals(item.SessionState, sessionState, StringComparison.OrdinalIgnoreCase))
+                .Where(item => string.IsNullOrWhiteSpace(operationalStatus) || string.Equals(item.OperationalStatus, operationalStatus, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            return RepositorySupport.BuildReportsResponse(rows);
+        }
+    }
+
+    public List<GroupInfo> GetGroups()
+    {
+        lock (_sync)
+        {
+            return _snapshot.Groups
+                .Select(item => new GroupInfo { Id = item.Id, Name = item.Name })
+                .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+    }
+
+    public UserAccount? FindUserByUsername(string username)
+    {
+        lock (_sync)
+        {
+            var user = _snapshot.Users.FirstOrDefault(item =>
+                string.Equals(item.Username, username?.Trim(), StringComparison.OrdinalIgnoreCase));
+
+            return user is null ? null : Clone(_snapshot).Users.FirstOrDefault(item => item.Id == user.Id);
+        }
+    }
+
+    public void RegisterFailedSignIn(string username, int maxFailedAttempts, int lockoutMinutes)
+    {
+        lock (_sync)
+        {
+            var user = _snapshot.Users.FirstOrDefault(item =>
+                string.Equals(item.Username, username?.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (user is null)
+            {
+                return;
+            }
+
+            user.FailedAttempts = Math.Max(0, user.FailedAttempts) + 1;
+            user.LastAttemptAtUtc = DateTime.UtcNow;
+            if (user.FailedAttempts >= Math.Max(1, maxFailedAttempts))
+            {
+                user.LockedUntilUtc = DateTime.UtcNow.AddMinutes(Math.Max(1, lockoutMinutes));
+            }
+
+            SaveSnapshot();
+        }
+    }
+
+    public void ResetFailedSignIn(string username)
+    {
+        lock (_sync)
+        {
+            var user = _snapshot.Users.FirstOrDefault(item =>
+                string.Equals(item.Username, username?.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (user is null)
+            {
+                return;
+            }
+
+            user.FailedAttempts = 0;
+            user.LockedUntilUtc = null;
+            SaveSnapshot();
+        }
+    }
+
+    public PortalProfile? GetPortalProfile(string username)
+    {
+        lock (_sync)
+        {
+            var snapshot = Clone(_snapshot);
+            var user = snapshot.Users.FirstOrDefault(item =>
+                string.Equals(item.Username, username?.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (user is null)
+            {
+                return null;
+            }
+
+            var careerName = snapshot.Careers.FirstOrDefault(item => item.Id == user.CareerId)?.Name;
+            var semesterName = snapshot.Semesters.FirstOrDefault(item => item.Id == user.SemesterId)?.Name;
+            return new PortalProfile
+            {
+                UserId = user.Id,
+                Username = user.Username,
+                FirstName = user.FirstName,
+                LastName = user.LastName,
+                FullName = $"{user.FirstName} {user.LastName}".Trim(),
+                Email = user.Email,
+                DocumentId = user.DocumentId,
+                CareerId = user.CareerId,
+                CareerName = careerName,
+                SemesterId = user.SemesterId,
+                SemesterName = semesterName,
+                Active = user.Active,
+                HashMethod = user.HashMethod,
+                Groups = user.Groups
+            };
+        }
+    }
+
+    public PortalProfile? UpdatePortalProfile(string username, PortalProfileUpdateInput input)
+    {
+        lock (_sync)
+        {
+            var user = _snapshot.Users.FirstOrDefault(item =>
+                string.Equals(item.Username, username?.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (user is null)
+            {
+                return null;
+            }
+
+            user.FirstName = input.FirstName.Trim();
+            user.LastName = input.LastName.Trim();
+            user.Email = input.Email.Trim();
+            SaveSnapshot();
+
+            return GetPortalProfile(user.Username);
+        }
+    }
+
+    public PasswordResetResult? UpdatePasswordByUsername(string username, string plainPassword, string hashMethod)
+    {
+        lock (_sync)
+        {
+            var user = _snapshot.Users.FirstOrDefault(item =>
+                string.Equals(item.Username, username?.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (user is null)
+            {
+                return null;
+            }
+
+            var method = PasswordHashService.NormalizeInteractiveMethod(hashMethod);
+            user.HashMethod = method;
+            user.PasswordHash = PasswordHashService.HashPassword(plainPassword.Trim(), method);
+            user.FailedAttempts = 0;
+            user.LockedUntilUtc = null;
+            SaveSnapshot();
+
+            return new PasswordResetResult
+            {
+                UserId = user.Id,
+                Username = user.Username,
+                HashMethod = method,
+                GeneratedPassword = plainPassword.Trim()
+            };
+        }
+    }
+
+    public PortalPasswordRecoveryResult RecoverPortalPassword(PortalPasswordRecoveryInput input, int tokenLifetimeMinutes)
+    {
+        lock (_sync)
+        {
+            CleanupPortalResetTokens();
+            var user = _snapshot.Users.FirstOrDefault(item =>
+                string.Equals(item.Username, input.Username?.Trim(), StringComparison.OrdinalIgnoreCase)
+                && string.Equals(item.DocumentId, input.DocumentId?.Trim(), StringComparison.OrdinalIgnoreCase)
+                && string.Equals(item.Email, input.Email?.Trim(), StringComparison.OrdinalIgnoreCase)
+                && item.Active);
+
+            if (user is null)
+            {
+                return new PortalPasswordRecoveryResult
+                {
+                    Success = false,
+                    Message = "No fue posible validar los datos de recuperacion."
+                };
+            }
+
+            var token = PasswordHashService.GenerateOpaqueToken();
+            var tokenHash = PasswordHashService.HashOpaqueToken(token);
+            var expiresAtUtc = DateTime.UtcNow.AddMinutes(Math.Max(5, tokenLifetimeMinutes));
+            var nextId = RepositorySupport.NextId(_snapshot.PortalPasswordResetTokens.Select(item => item.Id));
+            _snapshot.PortalPasswordResetTokens.RemoveAll(item =>
+                item.UserId == user.Id
+                || string.Equals(item.Username, user.Username, StringComparison.OrdinalIgnoreCase));
+            _snapshot.PortalPasswordResetTokens.Add(new PortalPasswordResetTokenRecord
+            {
+                Id = nextId,
+                UserId = user.Id,
+                Username = user.Username,
+                Email = user.Email,
+                Token = tokenHash,
+                CreatedUtc = DateTime.UtcNow,
+                ExpiresAtUtc = expiresAtUtc
+            });
+            SaveSnapshot();
+
+            return new PortalPasswordRecoveryResult
+            {
+                Success = true,
+                Message = "Se genero un token temporal de recuperacion. Usalo para definir una nueva clave.",
+                ResetToken = token,
+                ExpiresAtUtc = expiresAtUtc,
+                DeliveryHint = $"Token visible solo para pruebas internas. Debe enviarse al correo {user.Email} en una integracion posterior."
+            };
+        }
+    }
+
+    public bool ResetPortalPasswordWithToken(PortalPasswordResetWithTokenInput input, out string message)
+    {
+        lock (_sync)
+        {
+            message = "No fue posible restablecer la clave.";
+            if (string.IsNullOrWhiteSpace(input.Token) || string.IsNullOrWhiteSpace(input.NewPassword) || string.IsNullOrWhiteSpace(input.ConfirmPassword))
+            {
+                message = "Completa token, nueva clave y confirmacion.";
+                return false;
+            }
+
+            if (!string.Equals(input.NewPassword, input.ConfirmPassword, StringComparison.Ordinal))
+            {
+                message = "La confirmacion no coincide con la nueva clave.";
+                return false;
+            }
+
+            var tokenRecord = _snapshot.PortalPasswordResetTokens
+                .OrderByDescending(item => item.CreatedUtc)
+                .FirstOrDefault(item =>
+                    string.Equals(item.Token, PasswordHashService.HashOpaqueToken(input.Token.Trim()), StringComparison.OrdinalIgnoreCase)
+                    && item.ConsumedUtc is null);
+
+            if (tokenRecord is null || tokenRecord.ExpiresAtUtc < DateTime.UtcNow)
+            {
+                message = "El token no existe, ya fue usado o expiro.";
+                return false;
+            }
+
+            var user = _snapshot.Users.FirstOrDefault(item =>
+                item.Id == tokenRecord.UserId
+                || string.Equals(item.Username, tokenRecord.Username, StringComparison.OrdinalIgnoreCase));
+            if (user is null || !user.Active)
+            {
+                message = "El usuario asociado al token no esta disponible.";
+                return false;
+            }
+
+            var method = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
+            user.HashMethod = method;
+            user.PasswordHash = PasswordHashService.HashPassword(input.NewPassword.Trim(), method);
+            user.FailedAttempts = 0;
+            user.LockedUntilUtc = null;
+            tokenRecord.ConsumedUtc = DateTime.UtcNow;
+            SaveSnapshot();
+            message = "La clave fue restablecida correctamente.";
+            return true;
+        }
+    }
+
+    private void CleanupPortalResetTokens()
+    {
+        _snapshot.PortalPasswordResetTokens.RemoveAll(item =>
+            item.ConsumedUtc.HasValue
+            || item.ExpiresAtUtc < DateTime.UtcNow);
+    }
+
+    public List<PortalSessionEntry> GetPortalSessions(string username, int take)
+    {
+        lock (_sync)
+        {
+            var snapshot = Clone(_snapshot);
+            var user = snapshot.Users.FirstOrDefault(item =>
+                string.Equals(item.Username, username?.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (user is null)
+            {
+                return [];
+            }
+
+            var computersById = snapshot.Computers.ToDictionary(item => item.Id);
+            var roomByComputerId = snapshot.RoomLayoutItems
+                .Where(item => item.ComputerId.HasValue)
+                .Join(snapshot.Rooms, item => item.RoomId, room => room.Id, (item, room) => new { item.ComputerId, room.Name })
+                .GroupBy(item => item.ComputerId!.Value)
+                .ToDictionary(group => group.Key, group => group.First().Name);
+
+            return snapshot.UsageRecords
+                .Where(item => item.UserId == user.Id)
+                .OrderByDescending(item => item.StartUtc)
+                .Take(Math.Max(1, take))
+                .Select(item =>
+                {
+                    computersById.TryGetValue(item.ComputerId, out var computer);
+                    roomByComputerId.TryGetValue(item.ComputerId, out var roomName);
+                    return new PortalSessionEntry
+                    {
+                        SessionId = item.Id,
+                        Machine = computer?.Name ?? $"equipo-{item.ComputerId}",
+                        RoomName = roomName ?? computer?.Location,
+                        InventoryTag = computer?.InventoryTag,
+                        SessionState = "ended",
+                        SessionStateLabel = "Finalizada",
+                        SessionOrigin = "online",
+                        OriginLabel = RepositorySupport.TranslateSessionOrigin("online"),
+                        OperationalStatus = OperationalComputerStatus.Available.ToString(),
+                        OperationalStatusLabel = RepositorySupport.TranslateOperationalStatus(OperationalComputerStatus.Available),
+                        LoginStamp = item.StartUtc,
+                        LogoutStamp = item.EndUtc,
+                        DurationHours = Math.Round(Math.Max(0, (item.EndUtc - item.StartUtc).TotalHours), 2)
+                    };
+                })
+                .ToList();
+        }
+    }
+
     public List<AuditEntry> GetAuditEntries(int take)
     {
         lock (_sync)
@@ -345,6 +702,11 @@ public sealed class JsonAdminRepository : IAdminRepository
     {
         lock (_sync)
         {
+            if (string.IsNullOrWhiteSpace(input.Password))
+            {
+                throw new InvalidOperationException("Debes definir una clave inicial segura al crear un usuario. No se permite usar el documento como clave por defecto.");
+            }
+
             var user = new UserAccount
             {
                 Id = RepositorySupport.NextId(_snapshot.Users.Select(item => item.Id)),
@@ -356,8 +718,9 @@ public sealed class JsonAdminRepository : IAdminRepository
                 CareerId = input.CareerId,
                 SemesterId = input.SemesterId,
                 Active = input.Active,
-                HashMethod = PasswordHashService.NormalizeMethod(input.HashMethod),
-                PasswordHash = PasswordHashService.HashPassword(input.Password ?? string.Empty, input.HashMethod)
+                HashMethod = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod),
+                PasswordHash = PasswordHashService.HashPassword(input.Password.Trim(), PasswordHashService.NormalizeInteractiveMethod(input.HashMethod)),
+                Groups = ResolveGroups(input.GroupIds)
             };
 
             _snapshot.Users.Add(user);
@@ -380,10 +743,11 @@ public sealed class JsonAdminRepository : IAdminRepository
             user.CareerId = input.CareerId;
             user.SemesterId = input.SemesterId;
             user.Active = input.Active;
-            user.HashMethod = PasswordHashService.NormalizeMethod(input.HashMethod);
+            user.HashMethod = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
+            user.Groups = ResolveGroups(input.GroupIds);
             if (!string.IsNullOrWhiteSpace(input.Password))
             {
-                user.PasswordHash = PasswordHashService.HashPassword(input.Password, input.HashMethod);
+                user.PasswordHash = PasswordHashService.HashPassword(input.Password.Trim(), PasswordHashService.NormalizeInteractiveMethod(input.HashMethod));
             }
             SaveSnapshot();
             return user;
@@ -409,7 +773,7 @@ public sealed class JsonAdminRepository : IAdminRepository
             var user = _snapshot.Users.FirstOrDefault(item => item.Id == id);
             if (user is null) return null;
 
-            var method = PasswordHashService.NormalizeMethod(input.HashMethod);
+            var method = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
             var plainPassword = input.Generate || string.IsNullOrWhiteSpace(input.Password)
                 ? PasswordHashService.GeneratePassword()
                 : input.Password.Trim();
@@ -512,7 +876,8 @@ public sealed class JsonAdminRepository : IAdminRepository
                         SemesterId = semesterId,
                         Active = active,
                         HashMethod = "BCRYPT",
-                        PasswordHash = PasswordHashService.HashPassword(documentId, "BCRYPT")
+                        PasswordHash = PasswordHashService.HashPassword(PasswordHashService.GeneratePassword(), "BCRYPT"),
+                        FailedAttempts = 0
                     });
                     imported++;
                 }
@@ -528,7 +893,7 @@ public sealed class JsonAdminRepository : IAdminRepository
                     existing.HashMethod = existing.HashMethod ?? "BCRYPT";
                     if (string.IsNullOrWhiteSpace(existing.PasswordHash))
                     {
-                        existing.PasswordHash = PasswordHashService.HashPassword(documentId, existing.HashMethod);
+                        existing.PasswordHash = PasswordHashService.HashPassword(PasswordHashService.GeneratePassword(), existing.HashMethod);
                     }
                     updated++;
                 }
@@ -552,6 +917,7 @@ public sealed class JsonAdminRepository : IAdminRepository
                 {
                     Careers = snapshot.Careers ?? new List<Career>(),
                     Semesters = snapshot.Semesters ?? new List<Semester>(),
+                    Groups = snapshot.Groups ?? new List<GroupInfo>(),
                     Users = snapshot.Users ?? new List<UserAccount>(),
                     Computers = snapshot.Computers ?? new List<Computer>(),
                     Rooms = (snapshot.Rooms ?? new List<Room>()).Select(item => new Room
@@ -586,6 +952,7 @@ public sealed class JsonAdminRepository : IAdminRepository
         {
             Careers = snapshot.Careers.Select(item => new Career { Id = item.Id, Name = item.Name, Active = item.Active }).ToList(),
             Semesters = snapshot.Semesters.Select(item => new Semester { Id = item.Id, Name = item.Name, Active = item.Active }).ToList(),
+            Groups = snapshot.Groups.Select(item => new GroupInfo { Id = item.Id, Name = item.Name }).ToList(),
             Users = snapshot.Users.Select(item => new UserAccount
             {
                 Id = item.Id,
@@ -598,6 +965,10 @@ public sealed class JsonAdminRepository : IAdminRepository
                 SemesterId = item.SemesterId,
                 Active = item.Active,
                 HashMethod = item.HashMethod,
+                Groups = item.Groups.Select(group => new GroupInfo { Id = group.Id, Name = group.Name }).ToList(),
+                FailedAttempts = item.FailedAttempts,
+                LockedUntilUtc = item.LockedUntilUtc,
+                LastAttemptAtUtc = item.LastAttemptAtUtc,
                 PasswordHash = item.PasswordHash
             }).ToList(),
             Computers = snapshot.Computers.Select(item => new Computer
@@ -681,6 +1052,16 @@ public sealed class JsonAdminRepository : IAdminRepository
         var semester = new Semester { Id = RepositorySupport.NextId(_snapshot.Semesters.Select(item => item.Id)), Name = normalized, Active = true };
         _snapshot.Semesters.Add(semester);
         return semester.Id;
+    }
+
+    private List<GroupInfo> ResolveGroups(IEnumerable<int> groupIds)
+    {
+        var selected = new HashSet<int>(groupIds);
+        return _snapshot.Groups
+            .Where(group => selected.Contains(group.Id))
+            .Select(group => new GroupInfo { Id = group.Id, Name = group.Name })
+            .OrderBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static RoomLayoutItemType ParseRoomLayoutItemType(string? value)

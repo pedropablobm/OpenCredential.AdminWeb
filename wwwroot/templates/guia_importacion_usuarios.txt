@@ -1,0 +1,51 @@
+OpenCredential AdminWeb - Guia corta de importacion de usuarios
+
+1. Formatos aceptados
+- CSV
+- TXT
+- TSV
+
+2. Delimitadores detectados automaticamente
+- coma (,)
+- punto y coma (;)
+- tabulacion
+- barra vertical (|)
+
+3. Encabezados recomendados
+username,firstName,lastName,email,documentId,career,semester,active,hashMethod,password
+
+4. Columnas soportadas
+- username: obligatorio
+- firstName: nombres del usuario
+- lastName: apellidos del usuario
+- email: correo
+- documentId: documento o cedula
+- career: carrera o programa academico
+- semester: semestre o nivel
+- active: true/false, 1/0, si/no, activo/inactivo
+- hashMethod: BCRYPT, SHA512, SSHA512, SHA384, SSHA384, SHA256, SSHA256, SHA1, SSHA1, MD5, SMD5, NONE
+- password: clave inicial en texto plano
+
+5. Alias reconocidos por la aplicacion
+- firstName: nombres, nombre
+- lastName: apellidos, apellido
+- email: correo
+- documentId: documento, cedula
+- career: carrera
+- semester: semestre, level
+- active: estado, status
+- hashMethod: hash_method, algoritmo
+- password: clave, contrasena
+
+6. Reglas actuales de importacion
+- Si career no existe, la aplicacion la crea.
+- Si semester no existe, la aplicacion la crea.
+- Si active no viene, se asume true.
+- Si hashMethod no viene, se usa BCRYPT.
+- Si password no viene:
+  - en usuarios nuevos, la clave temporal queda con el valor de documentId
+  - en usuarios existentes, no se cambia la clave actual
+
+7. Recomendacion operativa
+- Para produccion, preferir enviar password o usar una estrategia posterior de restablecimiento.
+- Guardar el archivo en UTF-8.

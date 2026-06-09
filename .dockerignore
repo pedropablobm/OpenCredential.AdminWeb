@@ -1,7 +1,11 @@
 bin/
 obj/
-App_Data/
+App_Data/*
+!App_Data/adminweb-runtime.example.json
 .vs/
 .vscode/
 *.user
 *.suo
+*.log
+.dotnet-home/
+artifacts/

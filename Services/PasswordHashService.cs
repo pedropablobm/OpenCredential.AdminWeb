@@ -27,6 +27,16 @@ public static class PasswordHashService
         return SupportedMethods.Contains(normalized) ? normalized : "BCRYPT";
     }
 
+    public static string NormalizeInteractiveMethod(string? value)
+    {
+        return "BCRYPT";
+    }
+
+    public static bool IsWeakMethod(string? method)
+    {
+        return !string.Equals(NormalizeMethod(method), "BCRYPT", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static string GeneratePassword(int length = 14)
     {
         const string upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -94,6 +104,16 @@ public static class PasswordHashService
             "SSHA512" => VerifySalted(password, storedHash, SHA512.Create(), 64),
             _ => BCrypt.Net.BCrypt.Verify(password, storedHash)
         };
+    }
+
+    public static string HashOpaqueToken(string token)
+    {
+        return ComputeHex(token.Trim().ToUpperInvariant(), SHA256.Create());
+    }
+
+    public static string GenerateOpaqueToken(int byteLength = 16)
+    {
+        return Convert.ToHexString(RandomNumberGenerator.GetBytes(Math.Max(16, byteLength)));
     }
 
     private static string ComputeHex(string password, HashAlgorithm algorithm)

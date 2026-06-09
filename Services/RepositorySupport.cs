@@ -125,11 +125,141 @@ internal static class RepositorySupport
                 .ToList(),
             ComputerCards = computerCards,
             SessionAlerts = computedComputers
-                .Where(computer => computer.OperationalStatus is OperationalComputerStatus.Disconnected or OperationalComputerStatus.Orphaned)
-                .OrderByDescending(computer => computer.LastHeartbeatAt ?? computer.LoginStamp ?? computer.LastSeenUtc)
+                .Where(computer =>
+                    computer.OperationalStatus is OperationalComputerStatus.Disconnected or OperationalComputerStatus.Orphaned
+                    || computer.IsSuperseded
+                    || computer.IsUnexpectedShutdown
+                    || computer.IsHeartbeatTimeout)
+                .OrderByDescending(GetSessionAlertPriority)
+                .ThenByDescending(computer => computer.LastHeartbeatAt ?? computer.LoginStamp ?? computer.LastSeenUtc)
                 .ThenBy(computer => computer.ComputerName, StringComparer.OrdinalIgnoreCase)
                 .Take(10)
                 .ToList()
+        };
+    }
+
+    private static int GetSessionAlertPriority(ComputedComputerState computer)
+    {
+        if (computer.OperationalStatus == OperationalComputerStatus.Orphaned)
+        {
+            return 500;
+        }
+
+        if (computer.IsHeartbeatTimeout)
+        {
+            return 450;
+        }
+
+        if (computer.IsUnexpectedShutdown)
+        {
+            return 420;
+        }
+
+        if (computer.OperationalStatus == OperationalComputerStatus.Disconnected)
+        {
+            return 400;
+        }
+
+        if (computer.IsSuperseded)
+        {
+            return 300;
+        }
+
+        if (computer.HasRecoveredOfflineSession)
+        {
+            return 200;
+        }
+
+        return 100;
+    }
+
+    public static ReportsResponse BuildReportsResponse(IEnumerable<ReportSessionRow> sourceRows)
+    {
+        var rows = sourceRows
+            .OrderByDescending(item => item.LoginStamp)
+            .ToList();
+
+        return new ReportsResponse
+        {
+            Kpis = new ReportKpis
+            {
+                SessionCount = rows.Count,
+                TotalHours = Math.Round(rows.Sum(item => item.DurationHours), 1),
+                UniqueUsers = rows.Select(item => item.Username).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                ActivePrograms = rows.Select(item => item.CareerName).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                ActiveRooms = rows.Select(item => item.RoomName).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                OfflineRecoveredSessions = rows.Count(item => item.IsRecoveredOffline),
+                SupersededSessions = rows.Count(item => string.Equals(item.SessionEndReason, "superseded_by_logon", StringComparison.OrdinalIgnoreCase)),
+                HeartbeatTimeoutSessions = rows.Count(item => string.Equals(item.SessionEndReason, "heartbeat_timeout", StringComparison.OrdinalIgnoreCase)),
+                UnexpectedShutdownSessions = rows.Count(item => string.Equals(item.SessionEndReason, "unexpected_shutdown", StringComparison.OrdinalIgnoreCase))
+            },
+            UsageByCareer = rows
+                .Where(item => !string.IsNullOrWhiteSpace(item.CareerName))
+                .GroupBy(item => item.CareerName!, StringComparer.OrdinalIgnoreCase)
+                .Select(group => new ChartPoint
+                {
+                    Label = group.Key,
+                    Value = Math.Round(group.Sum(item => item.DurationHours), 1)
+                })
+                .OrderByDescending(item => item.Value)
+                .ToList(),
+            UsageBySemester = rows
+                .Where(item => !string.IsNullOrWhiteSpace(item.SemesterName))
+                .GroupBy(item => item.SemesterName!, StringComparer.OrdinalIgnoreCase)
+                .Select(group => new ChartPoint
+                {
+                    Label = group.Key,
+                    Value = Math.Round(group.Sum(item => item.DurationHours), 1)
+                })
+                .OrderByDescending(item => item.Value)
+                .ToList(),
+            UsageByRoom = rows
+                .Where(item => !string.IsNullOrWhiteSpace(item.RoomName))
+                .GroupBy(item => item.RoomName!, StringComparer.OrdinalIgnoreCase)
+                .Select(group => new ChartPoint
+                {
+                    Label = group.Key,
+                    Value = Math.Round(group.Sum(item => item.DurationHours), 1)
+                })
+                .OrderByDescending(item => item.Value)
+                .ToList(),
+            SessionsByOrigin = rows
+                .GroupBy(item => item.SessionOrigin ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                .Select(group => new ChartPoint
+                {
+                    Label = TranslateSessionOrigin(group.Key),
+                    Value = group.Count()
+                })
+                .OrderByDescending(item => item.Value)
+                .ToList(),
+            TopUsers = rows
+                .GroupBy(item => item.Username, StringComparer.OrdinalIgnoreCase)
+                .Select(group => new ReportMetricRow
+                {
+                    Label = group.Key,
+                    SecondaryLabel = group.Select(item => item.FullName).FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)),
+                    Hours = Math.Round(group.Sum(item => item.DurationHours), 1),
+                    Sessions = group.Count()
+                })
+                .OrderByDescending(item => item.Hours)
+                .ThenBy(item => item.Label, StringComparer.OrdinalIgnoreCase)
+                .Take(10)
+                .ToList(),
+            TopEquipment = rows
+                .Where(item => !string.IsNullOrWhiteSpace(item.Machine))
+                .GroupBy(item => item.Machine, StringComparer.OrdinalIgnoreCase)
+                .Select(group => new ReportMetricRow
+                {
+                    Label = group.Key,
+                    SecondaryLabel = group.Select(item => item.InventoryTag).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
+                    Hours = Math.Round(group.Sum(item => item.DurationHours), 1),
+                    Sessions = group.Count()
+                })
+                .OrderByDescending(item => item.Hours)
+                .ThenBy(item => item.Label, StringComparer.OrdinalIgnoreCase)
+                .Take(10)
+                .ToList(),
+            Sessions = rows.ToList()
         };
     }
 
@@ -153,9 +283,14 @@ internal static class RepositorySupport
             OperationalStatus = computer.OperationalStatus.ToString(),
             SessionState = computer.SessionState,
             SessionEndReason = computer.SessionEndReason,
+            SessionOrigin = computer.SessionOrigin,
+            OriginLabel = computer.OriginLabel,
+            AlertFlags = computer.AlertFlags,
             LastHeartbeatLabel = computer.LastHeartbeatAt?.ToLocalTime().ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture),
             HeartbeatAgeSeconds = computer.HeartbeatAgeSeconds,
-            IsOrphaned = computer.IsOrphaned
+            IsOrphaned = computer.IsOrphaned,
+            HasRecoveredOfflineSession = computer.HasRecoveredOfflineSession,
+            HasSessionWarning = computer.HasSessionWarning
         };
     }
 
@@ -181,6 +316,16 @@ internal static class RepositorySupport
             OperationalComputerStatus.Orphaned => "Sesion huerfana",
             OperationalComputerStatus.Disabled => "Deshabilitado",
             _ => status.ToString()
+        };
+    }
+
+    public static string TranslateSessionOrigin(string? origin)
+    {
+        return origin?.Trim().ToLowerInvariant() switch
+        {
+            "online" => "Con conexion",
+            "offline_cache" => "Sin conexion (sincronizado)",
+            _ => string.IsNullOrWhiteSpace(origin) ? "Registro anterior" : origin.Trim()
         };
     }
 
@@ -305,10 +450,21 @@ internal static class RepositorySupport
 
         var users = new List<UserAccount>
         {
-            new() { Id = 1, Username = "amartinez", FirstName = "Ana", LastName = "Martinez", Email = "ana.martinez@campus.edu", DocumentId = "10001", CareerId = 1, SemesterId = 3, Active = true, HashMethod = "BCRYPT", PasswordHash = PasswordHashService.HashPassword("Ana2026!", "BCRYPT") },
-            new() { Id = 2, Username = "jlopez", FirstName = "Jorge", LastName = "Lopez", Email = "jorge.lopez@campus.edu", DocumentId = "10002", CareerId = 2, SemesterId = 2, Active = true, HashMethod = "SHA256", PasswordHash = PasswordHashService.HashPassword("Jorge2026!", "SHA256") },
-            new() { Id = 3, Username = "mrojas", FirstName = "Maria", LastName = "Rojas", Email = "maria.rojas@campus.edu", DocumentId = "10003", CareerId = 1, SemesterId = 1, Active = true, HashMethod = "SSHA512", PasswordHash = PasswordHashService.HashPassword("Maria2026!", "SSHA512") },
-            new() { Id = 4, Username = "cgarcia", FirstName = "Carlos", LastName = "Garcia", Email = "carlos.garcia@campus.edu", DocumentId = "10004", CareerId = 3, SemesterId = 2, Active = false, HashMethod = "MD5", PasswordHash = PasswordHashService.HashPassword("Carlos2026!", "MD5") }
+            new() { Id = 1, Username = "amartinez", FirstName = "Ana", LastName = "Martinez", Email = "ana.martinez@campus.edu", DocumentId = "10001", CareerId = 1, SemesterId = 3, Active = true, HashMethod = "BCRYPT", PasswordHash = PasswordHashService.HashPassword("Ana2026!", "BCRYPT"), Groups = new List<GroupInfo> { new() { Id = 1, Name = "Estudiantes" } } },
+            new() { Id = 2, Username = "jlopez", FirstName = "Jorge", LastName = "Lopez", Email = "jorge.lopez@campus.edu", DocumentId = "10002", CareerId = 2, SemesterId = 2, Active = true, HashMethod = "SHA256", PasswordHash = PasswordHashService.HashPassword("Jorge2026!", "SHA256"), Groups = new List<GroupInfo> { new() { Id = 2, Name = "Docentes" }, new() { Id = 5, Name = "AdminWeb-Coordinador" } } },
+            new() { Id = 3, Username = "mrojas", FirstName = "Maria", LastName = "Rojas", Email = "maria.rojas@campus.edu", DocumentId = "10003", CareerId = 1, SemesterId = 1, Active = true, HashMethod = "SSHA512", PasswordHash = PasswordHashService.HashPassword("Maria2026!", "SSHA512"), Groups = new List<GroupInfo> { new() { Id = 1, Name = "Estudiantes" } } },
+            new() { Id = 4, Username = "cgarcia", FirstName = "Carlos", LastName = "Garcia", Email = "carlos.garcia@campus.edu", DocumentId = "10004", CareerId = 3, SemesterId = 2, Active = false, HashMethod = "MD5", PasswordHash = PasswordHashService.HashPassword("Carlos2026!", "MD5"), Groups = new List<GroupInfo> { new() { Id = 4, Name = "Invitados" } } }
+        };
+
+        var groups = new List<GroupInfo>
+        {
+            new() { Id = 1, Name = "Estudiantes" },
+            new() { Id = 2, Name = "Docentes" },
+            new() { Id = 3, Name = "Funcionarios" },
+            new() { Id = 4, Name = "Invitados" },
+            new() { Id = 5, Name = "AdminWeb-Coordinador" },
+            new() { Id = 6, Name = "AdminWeb-Operador" },
+            new() { Id = 7, Name = "AdminWeb-SuperAdmin" }
         };
 
         var computers = new List<Computer>
@@ -359,6 +515,7 @@ internal static class RepositorySupport
         {
             Careers = careers,
             Semesters = semesters,
+            Groups = groups,
             Users = users,
             Computers = computers,
             Rooms = rooms,

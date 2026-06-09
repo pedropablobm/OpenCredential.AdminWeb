@@ -1,0 +1,18 @@
+{
+  "database": {
+    "mode": "Sql",
+    "provider": "PostgreSql",
+    "connectionString": "",
+    "autoInitialize": true
+  },
+  "databaseSetup": {
+    "provider": "PostgreSql",
+    "host": "",
+    "port": 5432,
+    "databaseName": "",
+    "username": "",
+    "password": "",
+    "sslMode": "Require",
+    "autoInitialize": true
+  }
+}

@@ -21,6 +21,7 @@
                 <button type="submit" class="btn btn-primary btn-block">Ingresar</button>
             </form>
             <p class="support-text" id="loginResult"></p>
+            <a class="link-button" href="/portal.html">Ir al portal de usuario</a>
         </section>
     </div>
 
@@ -65,6 +66,10 @@
 
                 <div class="nav-group">
                     <p class="nav-label">Operacion</p>
+                    <button type="button" class="nav-item" data-view="reports">
+                        <span class="nav-icon"></span>
+                        <span>Reportes</span>
+                    </button>
                     <button type="button" class="nav-item" data-view="audit">
                         <span class="nav-icon"></span>
                         <span>Auditoria</span>
@@ -336,6 +341,7 @@
                                     <span class="legend-item"><span class="legend-dot disabled"></span> Fuera de servicio</span>
                                     <span class="legend-item"><span class="legend-dot empty"></span> Sin equipo</span>
                                 </div>
+                                <p class="support-text">Los badges azules indican sesiones sincronizadas desde cache offline. Los badges rojos resaltan cierres o reconciliaciones que requieren atencion.</p>
                             </div>
                             <div class="room-layout-shell">
                                 <div class="room-layout" id="roomLayoutGrid"></div>
@@ -393,7 +399,11 @@
                         <div class="import-dropzone">
                             <div>
                                 <h3>Archivo plano de usuarios</h3>
-                                <p class="section-copy">Formato esperado: <code>username</code>, <code>firstName</code>, <code>lastName</code>, <code>email</code>, <code>documentId</code>, <code>career</code>, <code>semester</code>, <code>active</code>.</p>
+                                <p class="section-copy">Formato esperado: <code>username</code>, <code>firstName</code>, <code>lastName</code>, <code>email</code>, <code>documentId</code>, <code>career</code>, <code>semester</code>, <code>active</code>, <code>hashMethod</code> y <code>password</code>. Si no envias <code>password</code>, los usuarios nuevos quedan con el documento como clave temporal.</p>
+                                <div class="import-resources">
+                                    <a class="btn btn-secondary" href="/templates/plantilla_usuarios_opencredential.csv" download>Descargar plantilla CSV</a>
+                                    <a class="btn btn-secondary" href="/templates/guia_importacion_usuarios.txt" download>Descargar guia de columnas</a>
+                                </div>
                             </div>
                             <form id="importForm" class="stack-form">
                                 <input type="file" id="userFile" name="file" accept=".csv,.txt,.tsv" required />
@@ -401,6 +411,151 @@
                             </form>
                             <p class="support-text" id="importResult"></p>
                         </div>
+                    </section>
+                </section>
+
+                <section class="module-view" id="reportsView">
+                    <div class="module-head">
+                        <div>
+                            <p class="breadcrumb">Operacion / Reportes</p>
+                            <h2>Reportes</h2>
+                            <p class="section-copy">Consulta uso academico y operativo con filtros por fecha, programa, semestre, estudiante, grupo y origen de sesion.</p>
+                        </div>
+                        <div class="hero-actions">
+                            <button type="button" class="btn btn-secondary" id="exportReportsCsvBtn">Exportar CSV</button>
+                            <button type="button" class="btn btn-primary" id="printReportsBtn">Exportar PDF</button>
+                        </div>
+                    </div>
+
+                    <section class="card section-card">
+                        <div class="section-head">
+                            <div>
+                                <p class="section-label">Filtros</p>
+                                <h3>Consulta base</h3>
+                            </div>
+                        </div>
+                        <div class="filter-grid">
+                            <label>
+                                Desde
+                                <input type="date" id="reportFromDate" />
+                            </label>
+                            <label>
+                                Hasta
+                                <input type="date" id="reportToDate" />
+                            </label>
+                            <label>
+                                Carrera
+                                <select id="reportCareerFilter"></select>
+                            </label>
+                            <label>
+                                Semestre
+                                <select id="reportSemesterFilter"></select>
+                            </label>
+                            <label>
+                                Grupo
+                                <select id="reportGroupFilter"></select>
+                            </label>
+                            <label>
+                                Estudiante
+                                <input type="text" id="reportUsernameFilter" placeholder="Usuario o nombre" />
+                            </label>
+                            <label>
+                                Origen de sesion
+                                <select id="reportOriginFilter">
+                                    <option value="">Todos</option>
+                                    <option value="online">Online</option>
+                                    <option value="offline_cache">Sin conexion (sincronizado)</option>
+                                </select>
+                            </label>
+                            <label>
+                                Estado de sesion
+                                <select id="reportSessionStateFilter">
+                                    <option value="">Todos</option>
+                                    <option value="active">Activa</option>
+                                    <option value="locked">Bloqueada</option>
+                                    <option value="disconnected">Desconectada</option>
+                                    <option value="ended">Finalizada</option>
+                                </select>
+                            </label>
+                        </div>
+                    </section>
+
+                    <div class="mini-kpi-grid" id="reportsKpiCards"></div>
+
+                    <div class="overview-grid">
+                        <section class="card section-card">
+                            <div class="section-head">
+                                <div>
+                                    <p class="section-label">Uso academico</p>
+                                    <h3>Horas por carrera</h3>
+                                </div>
+                            </div>
+                            <div class="chart-bars" id="reportsUsageByCareer"></div>
+                        </section>
+
+                        <section class="card section-card">
+                            <div class="section-head">
+                                <div>
+                                    <p class="section-label">Origen</p>
+                                    <h3>Sesiones por origen</h3>
+                                </div>
+                            </div>
+                            <div class="chart-bars" id="reportsSessionsByOrigin"></div>
+                        </section>
+                    </div>
+
+                    <div class="overview-grid">
+                        <section class="card section-card">
+                            <div class="section-head">
+                                <div>
+                                    <p class="section-label">Semestres</p>
+                                    <h3>Horas por semestre</h3>
+                                </div>
+                            </div>
+                            <div class="chart-bars" id="reportsUsageBySemester"></div>
+                        </section>
+
+                        <section class="card section-card">
+                            <div class="section-head">
+                                <div>
+                                    <p class="section-label">Salas</p>
+                                    <h3>Horas por sala</h3>
+                                </div>
+                            </div>
+                            <div class="chart-bars" id="reportsUsageByRoom"></div>
+                        </section>
+                    </div>
+
+                    <div class="overview-grid">
+                        <section class="card section-card">
+                            <div class="section-head">
+                                <div>
+                                    <p class="section-label">Top estudiantes</p>
+                                    <h3>Mayor uso en el rango</h3>
+                                </div>
+                            </div>
+                            <div class="table-host" id="reportTopUsersTable"></div>
+                        </section>
+
+                        <section class="card section-card">
+                            <div class="section-head">
+                                <div>
+                                    <p class="section-label">Top equipos</p>
+                                    <h3>Mayor demanda operativa</h3>
+                                </div>
+                            </div>
+                            <div class="table-host" id="reportTopEquipmentTable"></div>
+                        </section>
+                    </div>
+
+                    <section class="card section-card">
+                        <div class="section-head">
+                            <div>
+                                <p class="section-label">Detalle</p>
+                                <h3>Sesiones recientes filtradas</h3>
+                            </div>
+                        </div>
+                        <div class="table-host" id="reportSessionsTable"></div>
                     </section>
                 </section>
 
@@ -599,6 +754,11 @@
                     Clave
                     <input type="password" id="userPassword" placeholder="Clave del usuario" />
                 </label>
+                <div class="full-span">
+                    <span class="field-label">Grupos</span>
+                    <div id="userGroupsSelector" class="group-selector"></div>
+                    <p class="support-text">Usa los grupos de OpenCredential para permitir o restringir acceso a la aplicacion y para clasificar reportes.</p>
+                </div>
                 <div class="inline-actions full-span">
                     <button type="button" class="btn btn-secondary" id="generatePasswordBtn">Generar segura</button>
                     <button type="button" class="btn btn-secondary" id="resetPasswordBtn">Restablecer clave</button>

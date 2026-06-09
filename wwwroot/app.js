@@ -1,7 +1,10 @@
 const state = {
     snapshot: null,
     dashboard: null,
+    reports: null,
     session: null,
+    isLoading: false,
+    refreshHandle: null,
     currentView: "overview",
     currentEquipmentTab: "list",
     currentAcademicTab: "careers",
@@ -13,7 +16,10 @@ const state = {
         semestersTable: 1,
         usersTable: 1,
         computersTable: 1,
-        auditTable: 1
+        auditTable: 1,
+        reportTopUsersTable: 1,
+        reportTopEquipmentTable: 1,
+        reportSessionsTable: 1
     },
     filters: {
         users: { query: "", status: "", careerId: "" },
@@ -28,8 +34,13 @@ const pageSizeByTable = {
     semestersTable: 8,
     usersTable: 8,
     computersTable: 8,
-    auditTable: 10
+    auditTable: 10,
+    reportTopUsersTable: 8,
+    reportTopEquipmentTable: 8,
+    reportSessionsTable: 10
 };
+
+const autoRefreshIntervalMs = 20000;
 
 async function fetchJson(url, options) {
     const response = await fetch(url, {
@@ -65,25 +76,45 @@ async function fetchJson(url, options) {
     return response.json();
 }
 
-async function loadAll() {
-    await loadDatabaseConfiguration();
+async function loadAll(options = {}) {
+    if (state.isLoading) {
+        return;
+    }
 
-    try {
-        state.snapshot = await fetchJson("/api/summary");
-    } catch (error) {
-        showDataLoadError(error);
-        state.snapshot = createEmptySnapshot();
+    const { background = false } = options;
+    state.isLoading = true;
+
+    if (!background) {
+        await loadDatabaseConfiguration();
     }
 
     try {
-        state.dashboard = await fetchJson(`/api/dashboard?${buildDashboardQuery()}`);
-    } catch (error) {
-        showDataLoadError(error);
-        state.dashboard = createEmptyDashboard();
-    }
+        try {
+            state.snapshot = await fetchJson("/api/summary");
+        } catch (error) {
+            showDataLoadError(error);
+            state.snapshot = createEmptySnapshot();
+        }
 
-    populateSelects(state.snapshot);
-    renderApp();
+        try {
+            state.dashboard = await fetchJson(`/api/dashboard?${buildDashboardQuery()}`);
+        } catch (error) {
+            showDataLoadError(error);
+            state.dashboard = createEmptyDashboard();
+        }
+
+        try {
+            state.reports = await fetchJson(`/api/reports?${buildReportsQuery()}`);
+        } catch (error) {
+            showDataLoadError(error);
+            state.reports = createEmptyReports();
+        }
+
+        populateSelects(state.snapshot);
+        renderApp();
+    } finally {
+        state.isLoading = false;
+    }
 }
 
 async function loadDatabaseConfiguration() {
@@ -134,12 +165,36 @@ function buildDashboardQuery() {
     return params.toString();
 }
 
+function buildReportsQuery() {
+    const params = new URLSearchParams({
+        fromUtc: toUtcDateString(document.getElementById("reportFromDate")?.value, false),
+        toUtc: toUtcDateString(document.getElementById("reportToDate")?.value, true),
+        careerId: document.getElementById("reportCareerFilter")?.value || "",
+        semesterId: document.getElementById("reportSemesterFilter")?.value || "",
+        groupId: document.getElementById("reportGroupFilter")?.value || "",
+        username: document.getElementById("reportUsernameFilter")?.value?.trim() || "",
+        sessionOrigin: document.getElementById("reportOriginFilter")?.value || "",
+        sessionState: document.getElementById("reportSessionStateFilter")?.value || ""
+    });
+
+    for (const [key, value] of [...params.entries()]) {
+        if (!value) {
+            params.delete(key);
+        }
+    }
+
+    return params.toString();
+}
+
 function populateSelects(snapshot) {
     fillOptions(document.getElementById("careerFilter"), snapshot.careers, "Todas las carreras");
     fillOptions(document.getElementById("semesterFilter"), snapshot.semesters, "Todos los semestres");
     fillOptions(document.getElementById("userCareer"), snapshot.careers, "Sin carrera");
     fillOptions(document.getElementById("userSemester"), snapshot.semesters, "Sin semestre");
     fillOptions(document.getElementById("userCareerFilter"), snapshot.careers, "Todas las carreras");
+    fillOptions(document.getElementById("reportCareerFilter"), snapshot.careers, "Todas las carreras");
+    fillOptions(document.getElementById("reportSemesterFilter"), snapshot.semesters, "Todos los semestres");
+    fillOptions(document.getElementById("reportGroupFilter"), snapshot.groups ?? [], "Todos los grupos");
     fillOptions(document.getElementById("roomSelector"), snapshot.rooms, "Selecciona una sala");
     ensureSelectedRoom(snapshot.rooms);
 }
@@ -165,18 +220,276 @@ function fillOptions(select, items, placeholder) {
     }
 }
 
+function renderUserGroupSelector(selectedGroupIds) {
+    const host = document.getElementById("userGroupsSelector");
+    const groups = (state.snapshot?.groups ?? []).slice().sort((left, right) => left.name.localeCompare(right.name, "es"));
+    const selected = new Set((selectedGroupIds || []).map(value => String(value)));
+
+    if (!groups.length) {
+        host.innerHTML = `<p class="support-text">No hay grupos cargados desde OpenCredential en la base actual.</p>`;
+        return;
+    }
+
+    host.innerHTML = groups.map(group => `
+        <label class="toggle-card group-option">
+            <input type="checkbox" name="userGroups" value="${group.id}" ${selected.has(String(group.id)) ? "checked" : ""} />
+            <span>
+                <strong>${escapeHtml(group.name)}</strong>
+                <span>Grupo reutilizado desde OpenCredential.</span>
+            </span>
+        </label>
+    `).join("");
+}
+
+function getSelectedUserGroupIds() {
+    return [...document.querySelectorAll('#userGroupsSelector input[name="userGroups"]:checked')]
+        .map(input => parseNullableInt(input.value))
+        .filter(value => Number.isInteger(value));
+}
+
+function renderUserGroupsBadges(groups) {
+    if (!groups?.length) {
+        return `<span class="support-text">Sin grupos</span>`;
+    }
+
+    return `<div class="group-badges">${groups
+        .map(group => `<span class="group-badge">${escapeHtml(group.name)}</span>`)
+        .join("")}</div>`;
+}
+
+function renderInlineBadges(values) {
+    if (!values?.length) {
+        return `<span class="support-text">Sin grupos</span>`;
+    }
+
+    return `<div class="group-badges">${values
+        .map(value => `<span class="group-badge">${escapeHtml(value)}</span>`)
+        .join("")}</div>`;
+}
+
 function renderApp() {
     renderOverview();
     renderUsersModule();
     renderEquipmentModule();
     renderAcademicModule();
+    renderReportsModule();
     renderAuditModule();
     updateSessionChrome();
     updateTopbarDate();
 }
 
+function renderReportsModule() {
+    const reports = state.reports ?? createEmptyReports();
+    renderKpiCards("reportsKpiCards", [
+        { label: "Sesiones", value: reports.kpis.sessionCount, note: "Registros en el rango", tone: "neutral" },
+        { label: "Horas", value: reports.kpis.totalHours, note: "Uso total acumulado", tone: "success" },
+        { label: "Usuarios unicos", value: reports.kpis.uniqueUsers, note: "Personas con actividad", tone: "info" },
+        { label: "Programas activos", value: reports.kpis.activePrograms, note: "Carreras con uso", tone: "info" },
+        { label: "Salas activas", value: reports.kpis.activeRooms, note: "Salas con actividad", tone: "slate" },
+        { label: "Offline recuperadas", value: reports.kpis.offlineRecoveredSessions, note: "Sesiones historicas sincronizadas", tone: "info" },
+        { label: "Reemplazadas", value: reports.kpis.supersededSessions, note: "Cerradas por nuevo logon", tone: "warning" },
+        { label: "Timeout heartbeat", value: reports.kpis.heartbeatTimeoutSessions, note: "Cierres por timeout", tone: "danger" },
+        { label: "Apagados inesperados", value: reports.kpis.unexpectedShutdownSessions, note: "Cierres abruptos", tone: "danger" }
+    ]);
+
+    renderBars("reportsUsageByCareer", reports.usageByCareer ?? [], "horas");
+    renderBars("reportsSessionsByOrigin", reports.sessionsByOrigin ?? [], "sesiones");
+    renderBars("reportsUsageBySemester", reports.usageBySemester ?? [], "horas");
+    renderBars("reportsUsageByRoom", reports.usageByRoom ?? [], "horas");
+
+    renderPaginatedTable(
+        "reportTopUsersTable",
+        ["Usuario", "Nombre", "Horas", "Sesiones"],
+        (reports.topUsers ?? []).map(item => [
+            item.label,
+            item.secondaryLabel || "Sin usuario identificado",
+            item.hours,
+            item.sessions
+        ]),
+        "No hay usuarios para los filtros seleccionados."
+    );
+
+    renderPaginatedTable(
+        "reportTopEquipmentTable",
+        ["Equipo", "Inventario", "Horas", "Sesiones"],
+        (reports.topEquipment ?? []).map(item => [
+            item.label,
+            item.secondaryLabel || "Sin inventario",
+            item.hours,
+            item.sessions
+        ]),
+        "No hay equipos para los filtros seleccionados."
+    );
+
+    renderPaginatedTable(
+        "reportSessionsTable",
+        ["Fecha inicio", "Usuario", "Programa", "Semestre", "Grupos", "Equipo", "Sala", "Origen", "Sesion", "Estado", "Horas"],
+        (reports.sessions ?? []).map(item => [
+            formatAuditDate(item.loginStamp),
+            `${escapeHtml(formatReportSessionUsername(item))}<br><span class="support-text">${escapeHtml(formatReportSessionSecondary(item))}</span>`,
+            item.careerName || "Sin carrera",
+            item.semesterName || "Sin semestre",
+            renderInlineBadges(item.groups || []),
+            item.machine,
+            item.roomName || "Sin sala",
+            renderReportSessionOrigin(item),
+            renderReportSessionState(item),
+            renderStatusTag(item.operationalStatusLabel || item.operationalStatus || "Disponible", item.operationalStatus || "Available"),
+            item.durationHours
+        ]),
+        "No hay sesiones para los filtros seleccionados."
+    );
+}
+
+function formatReportSessionUsername(item) {
+    if (!item) {
+        return "Sin usuario identificado";
+    }
+
+    const username = String(item.username || "").trim();
+    if (!username) {
+        return "Sin usuario identificado";
+    }
+
+    return username;
+}
+
+function formatReportSessionSecondary(item) {
+    if (!item) {
+        return "Sin usuario identificado";
+    }
+
+    const fullName = String(item.fullName || "").trim();
+    const documentId = String(item.documentId || "").trim();
+    if (fullName) {
+        return fullName;
+    }
+
+    if (documentId) {
+        return documentId;
+    }
+
+    if (String(item.operationalStatus || "").toLowerCase() === "orphaned") {
+        return "Sesion huerfana sin usuario identificado";
+    }
+
+    return "Sin usuario identificado";
+}
+
+function renderReportSessionOrigin(item) {
+    const chips = [];
+    if (item?.sessionOrigin) {
+        chips.push(renderMetaChip(translateSessionOriginLabel(item.sessionOrigin), "origin"));
+    } else {
+        chips.push("Registro anterior");
+    }
+
+    const reasonLabel = translateSessionEndReasonLabel(item?.sessionEndReason);
+    if (reasonLabel) {
+        chips.push(`<span class="support-text">${escapeHtml(reasonLabel)}</span>`);
+    }
+
+    return chips.join("<br>");
+}
+
+function renderReportSessionState(item) {
+    const stateLabel = item?.sessionState ? translateStatus(item.sessionState) : "Sin estado";
+    const reasonLabel = translateSessionEndReasonLabel(item?.sessionEndReason);
+    return reasonLabel
+        ? `${escapeHtml(stateLabel)}<br><span class="support-text">${escapeHtml(reasonLabel)}</span>`
+        : stateLabel;
+}
+
+function exportReportsCsv() {
+    const reports = state.reports ?? createEmptyReports();
+    if (!(reports.sessions ?? []).length) {
+        window.alert("No hay sesiones para exportar con los filtros actuales.");
+        return;
+    }
+
+    const rows = [
+        [
+            "Fecha inicio",
+            "Fecha cierre",
+            "Usuario",
+            "Nombre completo",
+            "Documento",
+            "Programa",
+            "Semestre",
+            "Grupos",
+            "Equipo",
+            "Sala",
+            "Inventario",
+            "IP",
+            "Origen",
+            "Estado de sesion",
+            "Motivo cierre",
+            "Estado operativo",
+            "Horas"
+        ],
+        ...reports.sessions.map(item => [
+            formatAuditDate(item.loginStamp),
+            item.logoutStamp ? formatAuditDate(item.logoutStamp) : "Sesion abierta",
+            item.username || "",
+            item.fullName || "",
+            item.documentId || "",
+            item.careerName || "",
+            item.semesterName || "",
+            (item.groups || []).join(" | "),
+            item.machine || "",
+            item.roomName || "",
+            item.inventoryTag || "",
+            item.ipAddress || "",
+            translateSessionOriginLabel(item.sessionOrigin),
+            item.sessionState ? translateStatus(item.sessionState) : "",
+            item.sessionEndReason || "",
+            item.operationalStatusLabel || item.operationalStatus || "",
+            Number(item.durationHours || 0).toFixed(2)
+        ])
+    ];
+
+    const csv = rows.map(row => row.map(formatCsvCell).join(",")).join("\r\n");
+    downloadFile(`reporte_opencredential_${buildDateStamp()}.csv`, "text/csv;charset=utf-8;", csv);
+}
+
+async function exportReportsPdf() {
+    const reports = state.reports ?? createEmptyReports();
+    if (!(reports.sessions ?? []).length) {
+        window.alert("No hay sesiones para exportar con los filtros actuales.");
+        return;
+    }
+
+    const response = await fetch(`/api/reports/pdf?${buildReportsQuery()}`, {
+        credentials: "same-origin"
+    });
+
+    if (response.status === 401) {
+        handleUnauthorized();
+        return;
+    }
+
+    if (!response.ok) {
+        let detail = "";
+        try {
+            const errorPayload = await response.json();
+            detail = errorPayload.detail || errorPayload.message || errorPayload.title || JSON.stringify(errorPayload);
+        } catch {
+            detail = await response.text();
+        }
+        throw new Error(detail || `Error ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const matchedName = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const fileName = matchedName?.[1] || `reporte_opencredential_${buildDateStamp()}.pdf`;
+    downloadBlob(fileName, blob);
+}
+
 function renderOverview() {
     const kpis = state.dashboard?.kpis ?? createEmptyDashboard().kpis;
+    const operationalComputers = getOperationalComputers(state.snapshot);
+    const recoveredOfflineCount = operationalComputers.filter(item => item.hasRecoveredOfflineSession).length;
     renderKpiCards("overviewKpiCards", [
         { label: "Usuarios activos", value: `${kpis.activeUsers}/${kpis.totalUsers}`, note: "Estado de cuentas registradas", tone: "neutral" },
         { label: "Equipos disponibles", value: kpis.availableComputers, note: "Listos para uso en sala", tone: "success" },
@@ -184,6 +497,7 @@ function renderOverview() {
         { label: "Bloqueados", value: kpis.lockedComputers, note: "Sesion bloqueada con presencia", tone: "info" },
         { label: "Desconectados", value: kpis.disconnectedComputers, note: "Sesion separada del cliente", tone: "slate" },
         { label: "Huerfanas", value: kpis.orphanedComputers, note: "Requieren revision operativa", tone: "danger" },
+        { label: "Offline recuperadas", value: recoveredOfflineCount, note: "Equipos activos sincronizados desde cache", tone: "info" },
         { label: "Deshabilitados", value: kpis.disabledComputers, note: "Fuera de servicio", tone: "danger" }
     ]);
 
@@ -210,12 +524,13 @@ function renderUsersModule() {
 
     renderPaginatedTable(
         "usersTable",
-        ["Usuario", "Nombre", "Carrera", "Semestre", "Hash", "Estado", "Acciones"],
+        ["Usuario", "Nombre", "Carrera", "Semestre", "Grupos", "Hash", "Estado", "Acciones"],
         users.map(item => [
             item.username,
             `${item.firstName} ${item.lastName}<br><span class="support-text">${item.email}</span>`,
             getLookupName(snapshot.careers, item.careerId),
             getLookupName(snapshot.semesters, item.semesterId),
+            renderUserGroupsBadges(item.groups),
             item.hashMethod || "SIN DEFINIR",
             renderStatusTag(item.active ? "Activo" : "Inactivo"),
             tableActions(
@@ -232,6 +547,7 @@ function renderEquipmentModule() {
     const snapshot = state.snapshot ?? createEmptySnapshot();
     const filters = state.filters.equipment;
     const operationalComputers = getOperationalComputers(snapshot);
+    const recoveredOfflineCount = operationalComputers.filter(item => item.hasRecoveredOfflineSession).length;
     const inventoryById = new Map(snapshot.computers.map(item => [item.id, item]));
     const filteredComputers = operationalComputers
         .filter(computer => {
@@ -252,6 +568,7 @@ function renderEquipmentModule() {
         { label: "Bloqueados", value: dashboard.kpis.lockedComputers, note: "Sesion bloqueada", tone: "info" },
         { label: "Desconectados", value: dashboard.kpis.disconnectedComputers, note: "Sesion en pausa", tone: "slate" },
         { label: "Huerfanas", value: dashboard.kpis.orphanedComputers, note: "Sin heartbeat reciente", tone: "danger" },
+        { label: "Offline recuperadas", value: recoveredOfflineCount, note: "Equipos activos sincronizados desde cache", tone: "info" },
         { label: "Deshabilitados", value: dashboard.kpis.disabledComputers, note: "No operativos", tone: "danger" }
     ]);
 
@@ -413,6 +730,7 @@ function renderOverviewEquipmentAlerts(computers) {
                         <strong>${item.name}</strong>
                         <div class="support-text">${item.location}</div>
                         <div class="support-text">${item.currentUsername || "Sin usuario actual"} · ${item.lastSeenUtc ? formatAuditDate(item.lastSeenUtc) : "Sin reporte"}</div>
+                        ${renderSessionMetadata(item)}
                     </div>
                 </div>
                 ${renderStatusTag(item.statusLabel, item.statusKey)}
@@ -456,6 +774,7 @@ function renderEquipmentActivity(computers) {
                         <strong>${item.name}</strong>
                         <div class="support-text">${item.location} · ${item.ipAddress || "Sin IP"}</div>
                         <div class="support-text">${item.currentUsername || "Sin usuario actual"}${item.sessionState ? ` · ${translateStatus(item.sessionState)}` : ""}</div>
+                        ${renderSessionMetadata(item)}
                     </div>
                 </div>
                 <div class="activity-side">
@@ -573,6 +892,8 @@ function renderRoomMap(snapshot, filteredComputers) {
             <p><strong>Usuario actual:</strong> ${computer?.currentUsername || "Sin asignar"}</p>
             <p><strong>Estado:</strong> ${computer ? renderStatusTag(computer.statusLabel, computer.statusKey) : renderStatusTag(deriveLayoutItemStatusLabel(activeItem, computer))}</p>
             <p><strong>Sesion:</strong> ${computer?.sessionState ? translateStatus(computer.sessionState) : "Sin sesion"}</p>
+            <p><strong>Origen:</strong> ${computer?.originLabel || "No aplica"}</p>
+            <div class="detail-flags">${computer ? renderSessionFlags(computer, false) : ""}</div>
             <p><strong>Heartbeat:</strong> ${computer?.lastHeartbeatAt ? formatAuditDate(computer.lastHeartbeatAt) : "Sin heartbeat"}</p>
             <p><strong>Ultimo reporte:</strong> ${computer?.lastSeenUtc ? formatAuditDate(computer.lastSeenUtc) : "Sin dato"}</p>
         </div>
@@ -815,6 +1136,7 @@ function renderRoomVisualContent(item, computer, isEditor = false) {
             <div class="visual-copy">
                 <strong title="${escapeHtml(title)}">${escapeHtml(compactVisualText(title, isEditor ? 18 : 22))}</strong>
                 <span title="${escapeHtml(subtitle)}">${escapeHtml(compactVisualText(formatVisualSubtitle(item, subtitle), isEditor ? 18 : 20))}</span>
+                ${computer ? renderSessionFlags(computer, true) : ""}
             </div>
         </div>
     `;
@@ -1172,8 +1494,13 @@ function normalizeComputedComputer(item) {
         logoutStamp: item.logoutStamp,
         sessionState: item.sessionState,
         sessionEndReason: item.sessionEndReason,
+        sessionOrigin: item.sessionOrigin,
+        originLabel: item.originLabel,
+        alertFlags: item.alertFlags || [],
         heartbeatAgeSeconds: item.heartbeatAgeSeconds,
         isOrphaned: item.isOrphaned,
+        hasRecoveredOfflineSession: Boolean(item.hasRecoveredOfflineSession),
+        hasSessionWarning: Boolean(item.hasSessionWarning),
         administrativeStatus: item.administrativeStatus,
         statusKey,
         statusLabel: item.operationalStatusLabel || translateStatus(statusKey)
@@ -1195,12 +1522,86 @@ function normalizeLegacyComputer(item) {
         logoutStamp: null,
         sessionState: null,
         sessionEndReason: null,
+        sessionOrigin: null,
+        originLabel: null,
+        alertFlags: [],
         heartbeatAgeSeconds: null,
         isOrphaned: false,
+        hasRecoveredOfflineSession: false,
+        hasSessionWarning: false,
         administrativeStatus: item.status,
         statusKey,
         statusLabel: translateStatus(statusKey)
     };
+}
+
+function renderSessionMetadata(item) {
+    const chips = [];
+    if (item.originLabel) {
+        chips.push(renderMetaChip(item.originLabel, "origin"));
+    }
+
+    (item.alertFlags || []).forEach(flag => {
+        const label = translateAlertFlag(flag);
+        if (label) {
+            chips.push(renderMetaChip(label, getAlertTone(flag)));
+        }
+    });
+
+    if (!chips.length) {
+        return "";
+    }
+
+    return `<div class="meta-chip-row">${chips.join("")}</div>`;
+}
+
+function renderSessionFlags(item, compact = false) {
+    const chips = [];
+    if (item.originLabel && compact) {
+        chips.push(renderMetaChip(item.originLabel, "origin"));
+    }
+
+    (item.alertFlags || []).forEach(flag => {
+        const label = translateAlertFlag(flag);
+        if (label) {
+            chips.push(renderMetaChip(label, getAlertTone(flag), compact));
+        }
+    });
+
+    return chips.length ? `<div class="meta-chip-row ${compact ? "is-compact" : ""}">${chips.join("")}</div>` : "";
+}
+
+function renderMetaChip(label, tone = "origin", compact = false) {
+    return `<span class="meta-chip meta-chip-${tone}${compact ? " is-compact" : ""}">${escapeHtml(label)}</span>`;
+}
+
+function translateAlertFlag(flag) {
+    return {
+        offline_recovered: "Offline recuperado",
+        superseded_by_logon: "Reemplazada por nuevo logon",
+        unexpected_shutdown: "Apagado inesperado",
+        heartbeat_timeout: "Timeout de heartbeat",
+        orphaned: "Sesion huerfana"
+    }[flag] || null;
+}
+
+function getAlertTone(flag) {
+    return {
+        offline_recovered: "origin",
+        superseded_by_logon: "warning",
+        unexpected_shutdown: "danger",
+        heartbeat_timeout: "danger",
+        orphaned: "danger"
+    }[flag] || "slate";
+}
+
+function translateSessionEndReasonLabel(value) {
+    return {
+        logoff: "Cierre de sesion normal",
+        unexpected_shutdown: "Apagado inesperado",
+        heartbeat_timeout: "Timeout de heartbeat",
+        superseded_by_logon: "Reemplazada por nuevo logon"
+    }[String(value || "").toLowerCase()] || "";
 }
 
 function matchesStatusFilter(computer, filterValue) {
@@ -1225,6 +1626,7 @@ function createEmptySnapshot() {
     return {
         careers: [],
         semesters: [],
+        groups: [],
         users: [],
         computers: [],
         computedComputers: [],
@@ -1262,6 +1664,29 @@ function createEmptyDashboard() {
     };
 }
 
+function createEmptyReports() {
+    return {
+        kpis: {
+            sessionCount: 0,
+            totalHours: 0,
+            uniqueUsers: 0,
+            activePrograms: 0,
+            activeRooms: 0,
+            offlineRecoveredSessions: 0,
+            supersededSessions: 0,
+            heartbeatTimeoutSessions: 0,
+            unexpectedShutdownSessions: 0
+        },
+        usageByCareer: [],
+        usageBySemester: [],
+        usageByRoom: [],
+        sessionsByOrigin: [],
+        topUsers: [],
+        topEquipment: [],
+        sessions: []
+    };
+}
+
 function updateSessionChrome() {
     const role = state.session?.role || "Sin rol";
     const username = state.session?.username || "No iniciado";
@@ -1290,6 +1715,26 @@ function applySession(session) {
     authShell.classList.toggle("is-visible", !session?.authenticated);
     pageShell.classList.toggle("is-hidden", !session?.authenticated);
     updateSessionChrome();
+    syncAutoRefresh();
+}
+
+function syncAutoRefresh() {
+    if (state.refreshHandle) {
+        clearInterval(state.refreshHandle);
+        state.refreshHandle = null;
+    }
+
+    if (!state.session?.authenticated) {
+        return;
+    }
+
+    state.refreshHandle = window.setInterval(() => {
+        if (document.hidden || state.isLoading || document.querySelector(".drawer.is-open")) {
+            return;
+        }
+
+        loadAll({ background: true }).catch(() => {});
+    }, autoRefreshIntervalMs);
 }
 
 function handleUnauthorized() {
@@ -1319,6 +1764,7 @@ function resetUserForm() {
     document.getElementById("userPassword").value = "";
     document.getElementById("passwordActionResult").textContent = "";
     document.getElementById("userDrawerTitle").textContent = "Nuevo usuario";
+    renderUserGroupSelector([]);
 }
 
 function resetComputerForm() {
@@ -1388,6 +1834,7 @@ function editUser(item) {
     document.getElementById("userPassword").value = "";
     document.getElementById("passwordActionResult").textContent = "";
     document.getElementById("userActive").checked = item.active;
+    renderUserGroupSelector((item.groups || []).map(group => group.id));
     openDrawer("userDrawer");
 }
 
@@ -1491,6 +1938,7 @@ function updateGlobalSearchPlaceholder() {
         users: "Buscar usuario, documento o correo...",
         equipment: "Buscar equipo, inventario o IP...",
         academic: "Buscar carrera o semestre...",
+        reports: "Buscar estudiante, grupo o tendencia...",
         import: "Buscar acciones de importacion...",
         audit: "Buscar actor, accion, entidad o IP...",
         configuration: "Buscar host, usuario o ajuste..."
@@ -1668,6 +2116,7 @@ function bindForms() {
             semesterId: parseNullableInt(document.getElementById("userSemester").value),
             hashMethod: document.getElementById("userHashMethod").value,
             password: document.getElementById("userPassword").value,
+            groupIds: getSelectedUserGroupIds(),
             active: document.getElementById("userActive").checked
         };
         await fetchJson(id ? `/api/users/${id}` : "/api/users", {
@@ -1789,6 +2238,14 @@ function bindForms() {
     document.getElementById("careerFilter").addEventListener("change", loadAll);
     document.getElementById("semesterFilter").addEventListener("change", loadAll);
     document.getElementById("statusFilter").addEventListener("change", loadAll);
+    document.getElementById("reportFromDate").addEventListener("change", loadAll);
+    document.getElementById("reportToDate").addEventListener("change", loadAll);
+    document.getElementById("reportCareerFilter").addEventListener("change", loadAll);
+    document.getElementById("reportSemesterFilter").addEventListener("change", loadAll);
+    document.getElementById("reportGroupFilter").addEventListener("change", loadAll);
+    document.getElementById("reportOriginFilter").addEventListener("change", loadAll);
+    document.getElementById("reportSessionStateFilter").addEventListener("change", loadAll);
+    document.getElementById("reportUsernameFilter").addEventListener("input", debounceLoadAll);
 
     document.getElementById("userSearch").addEventListener("input", event => {
         state.filters.users.query = event.target.value.trim().toLowerCase();
@@ -1854,6 +2311,9 @@ function bindForms() {
             state.filters.academic.query = value;
             document.getElementById("academicSearch").value = event.target.value;
             renderAcademicModule();
+        } else if (state.currentView === "reports") {
+            document.getElementById("reportUsernameFilter").value = event.target.value;
+            debounceLoadAll();
         } else if (state.currentView === "audit") {
             state.filters.audit.query = value;
             document.getElementById("auditSearch").value = event.target.value;
@@ -1901,6 +2361,11 @@ function bindNavigation() {
     document.getElementById("quickImportBtn").addEventListener("click", () => {
         state.currentView = "import";
         syncViewState();
+    });
+
+    document.getElementById("exportReportsCsvBtn").addEventListener("click", exportReportsCsv);
+    document.getElementById("printReportsBtn").addEventListener("click", () => {
+        exportReportsPdf().catch(error => showToast(error.message || "No fue posible exportar el PDF.", "error"));
     });
 
     document.getElementById("newUserBtn").addEventListener("click", () => {
@@ -1954,6 +2419,14 @@ function parseNullableInt(value) {
     return value ? Number(value) : null;
 }
 
+function toUtcDateString(value, endOfDay) {
+    if (!value) {
+        return "";
+    }
+
+    return `${value}T${endOfDay ? "23:59:59" : "00:00:00"}Z`;
+}
+
 function getDatabaseConfigPayload() {
     return {
         provider: document.getElementById("dbProvider").value,
@@ -2001,6 +2474,52 @@ function capitalize(value) {
     return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+function getSelectedOptionText(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) {
+        return "Todos";
+    }
+
+    const selectedOption = select.options[select.selectedIndex];
+    return selectedOption?.textContent || "Todos";
+}
+
+function formatCsvCell(value) {
+    const text = String(value ?? "");
+    if (!/[",\r\n]/.test(text)) {
+        return text;
+    }
+
+    return `"${text.replaceAll('"', '""')}"`;
+}
+
+function downloadFile(fileName, mimeType, content) {
+    const blob = new Blob([content], { type: mimeType });
+    downloadBlob(fileName, blob);
+}
+
+function downloadBlob(fileName, blob) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+}
+
+function buildDateStamp() {
+    const now = new Date();
+    return [
+        now.getFullYear(),
+        String(now.getMonth() + 1).padStart(2, "0"),
+        String(now.getDate()).padStart(2, "0"),
+        String(now.getHours()).padStart(2, "0"),
+        String(now.getMinutes()).padStart(2, "0")
+    ].join("");
+}
+
 function escapeHtml(value) {
     return String(value)
         .replaceAll("&", "&amp;")
@@ -2013,7 +2532,13 @@ async function initializeApp() {
     bindForms();
     bindNavigation();
     bindLayoutInspector();
+    initializeReportFilters();
     syncViewState();
+    document.addEventListener("visibilitychange", () => {
+        if (!document.hidden && state.session?.authenticated && !document.querySelector(".drawer.is-open")) {
+            loadAll({ background: true }).catch(() => {});
+        }
+    });
 
     try {
         const session = await fetchJson("/api/auth/me");
@@ -2027,3 +2552,26 @@ async function initializeApp() {
 }
 
 initializeApp();
+
+function initializeReportFilters() {
+    const today = new Date();
+    const from = new Date();
+    from.setDate(today.getDate() - 30);
+    document.getElementById("reportToDate").value = today.toISOString().slice(0, 10);
+    document.getElementById("reportFromDate").value = from.toISOString().slice(0, 10);
+}
+
+let debounceHandle = null;
+function debounceLoadAll() {
+    clearTimeout(debounceHandle);
+    debounceHandle = setTimeout(() => {
+        loadAll().catch(() => {});
+    }, 250);
+}
+
+function translateSessionOriginLabel(origin) {
+    return {
+        online: "Con conexion",
+        offline_cache: "Sin conexion (sincronizado)"
+    }[String(origin || "").toLowerCase()] || origin || "Registro anterior";
+}

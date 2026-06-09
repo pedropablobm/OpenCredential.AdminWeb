@@ -900,6 +900,180 @@ tbody tr:hover {
     background: linear-gradient(180deg, #f9fbfe 0%, #f3f8fd 100%);
 }
 
+.import-resources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+.portal-page {
+    min-height: 100vh;
+    margin: 0;
+    background:
+        radial-gradient(circle at top left, rgba(37, 99, 235, 0.10), transparent 24rem),
+        linear-gradient(180deg, #eef4ff 0%, #f8fbff 48%, #f3f7fb 100%);
+}
+
+.portal-auth-shell {
+    min-height: 100vh;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+}
+
+.portal-auth-shell.is-visible {
+    display: flex;
+}
+
+.portal-login-card {
+    width: min(32rem, 100%);
+}
+
+.portal-auth-switch,
+.portal-tabs {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.portal-auth-tab,
+.portal-tab {
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background: rgba(255, 255, 255, 0.92);
+    color: #31456a;
+    border-radius: 999px;
+    padding: 0.8rem 1.15rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: 180ms ease;
+}
+
+.portal-auth-tab.is-active,
+.portal-tab.is-active {
+    background: linear-gradient(135deg, #1d4ed8, #2563eb);
+    color: #fff;
+    border-color: transparent;
+    box-shadow: 0 12px 22px rgba(37, 99, 235, 0.18);
+}
+
+.portal-auth-form {
+    margin-top: 1.25rem;
+}
+
+.portal-shell {
+    width: min(1240px, calc(100% - 2rem));
+    margin: 0 auto;
+    padding: 1.5rem 0 2.5rem;
+}
+
+.portal-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+}
+
+.portal-topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    flex-wrap: wrap;
+}
+
+.portal-main {
+    display: grid;
+    gap: 1.25rem;
+}
+
+.portal-hero {
+    display: grid;
+    gap: 1rem;
+}
+
+.portal-view {
+    display: none;
+}
+
+.portal-view.is-active {
+    display: block;
+}
+
+.portal-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.3fr) minmax(300px, 0.9fr);
+    gap: 1rem;
+}
+
+.portal-card {
+    display: grid;
+    gap: 1rem;
+}
+
+.portal-actions-row {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.portal-kv-list {
+    display: grid;
+    gap: 0.9rem;
+    margin: 0;
+}
+
+.portal-kv-list div {
+    display: grid;
+    gap: 0.25rem;
+    padding-bottom: 0.8rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.portal-kv-list dt {
+    margin: 0;
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #5f7397;
+}
+
+.portal-kv-list dd {
+    margin: 0;
+    color: #102041;
+    font-weight: 600;
+}
+
+.portal-hints {
+    margin: 0;
+    padding-left: 1.25rem;
+    color: #43597d;
+    display: grid;
+    gap: 0.75rem;
+}
+
+@media (max-width: 920px) {
+    .portal-shell {
+        width: min(100%, calc(100% - 1rem));
+        padding-top: 1rem;
+    }
+
+    .portal-topbar {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .portal-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.import-resources .btn {
+    text-decoration: none;
+}
+
 .toggle-card {
     display: flex;
     align-items: center;
@@ -928,6 +1102,110 @@ tbody tr:hover {
     display: block;
     margin-bottom: 0.35rem;
     color: var(--ink);
+}
+
+.field-label {
+    display: block;
+    margin-bottom: 0.55rem;
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--ink);
+}
+
+.group-selector {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.75rem;
+}
+
+.group-option {
+    align-items: flex-start;
+    min-height: 74px;
+}
+
+.group-option strong,
+.group-option span {
+    display: block;
+}
+
+.group-option strong {
+    margin-bottom: 0.2rem;
+}
+
+.group-option span {
+    color: var(--muted);
+    font-size: 0.84rem;
+    line-height: 1.35;
+}
+
+.group-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.group-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.28rem 0.68rem;
+    border-radius: 999px;
+    background: rgba(37, 99, 235, 0.1);
+    color: #1d4ed8;
+    font-size: 0.79rem;
+    font-weight: 700;
+}
+
+.meta-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.45rem;
+}
+
+.meta-chip-row.is-compact {
+    justify-content: center;
+    margin-top: 0.3rem;
+}
+
+.meta-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.22rem 0.52rem;
+    border-radius: 999px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    line-height: 1;
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
+
+.meta-chip.is-compact {
+    padding: 0.2rem 0.45rem;
+    font-size: 0.63rem;
+}
+
+.meta-chip-origin {
+    background: rgba(37, 99, 235, 0.1);
+    border-color: rgba(37, 99, 235, 0.16);
+    color: #1d4ed8;
+}
+
+.meta-chip-warning {
+    background: rgba(217, 119, 6, 0.12);
+    border-color: rgba(217, 119, 6, 0.18);
+    color: #b45309;
+}
+
+.meta-chip-danger {
+    background: rgba(194, 65, 52, 0.12);
+    border-color: rgba(194, 65, 52, 0.18);
+    color: var(--danger);
+}
+
+.meta-chip-slate {
+    background: rgba(100, 116, 139, 0.12);
+    border-color: rgba(100, 116, 139, 0.18);
+    color: #475569;
 }
 
 .config-callout p {
@@ -1491,6 +1769,11 @@ tbody tr:hover {
     width: 100%;
 }
 
+.visual-copy .meta-chip-row {
+    justify-content: center;
+    margin-top: 0.22rem;
+}
+
 .visual-copy strong {
     font-size: 0.88rem;
     line-height: 1.15;
@@ -1738,6 +2021,10 @@ tbody tr:hover {
 
 .detail-card p {
     margin: 0 0 0.6rem;
+}
+
+.detail-flags {
+    margin: 0 0 0.75rem;
 }
 
 .floating-layout-editor {

@@ -35,7 +35,7 @@ Configuracion base:
 "Database": {
   "Mode": "Sql",
   "Provider": "PostgreSql",
-  "ConnectionString": "Host=localhost;Port=5432;Database=opencredential_admin;Username=opencredential;Password=secret",
+  "ConnectionString": "Host=localhost;Port=5432;Database=opencredential_admin;Username=opencredential;Password=<define-aqui-una-clave-segura>",
   "AutoInitialize": true
 }
 ```
@@ -89,7 +89,7 @@ Configuracion base:
 "AdminAuth": {
   "Enabled": true,
   "Username": "admin",
-  "Password": "AdminWeb2026!",
+  "Password": "<define-aqui-una-clave-segura>",
   "PasswordHash": "",
   "HashMethod": "BCRYPT",
   "Role": "SuperAdmin",
@@ -101,9 +101,10 @@ Configuracion base:
 
 Recomendaciones:
 
-- En produccion cambia inmediatamente `AdminAuth__Username` y `AdminAuth__Password`
+- En produccion define `AdminAuth__Username` y `AdminAuth__Password` desde variables de entorno o secretos del despliegue
 - Si prefieres no guardar clave en texto plano, usa `AdminAuth__PasswordHash` junto con `AdminAuth__HashMethod`
 - Publica la app detras de HTTPS cuando la expongas fuera de la red interna
+- No versiones `App_Data/`, `keys/`, `.env`, cookies ni logs
 
 Roles soportados:
 
@@ -156,7 +157,7 @@ docker run -d \
   -p 8080:8080 \
   -e ASPNETCORE_ENVIRONMENT=Production \
   -e AdminAuth__Username=admin \
-  -e AdminAuth__Password=AdminWeb2026! \
+  -e AdminAuth__Password=CAMBIA_ESTA_CLAVE \
   -e ADMINWEB_DATA_DIR=/data \
   -v opencredential_adminweb_data:/data \
   --restart unless-stopped \
@@ -303,7 +304,7 @@ Nota: si el repositorio es privado, primero debes autenticar `git clone` con un 
 1. Crear una VM Debian/Ubuntu en Proxmox.
 2. Instalar Docker Engine y Docker Compose Plugin.
 3. Clonar este repositorio en el servidor.
-4. Crear un archivo `.env` con credenciales seguras.
+4. Crear un archivo `.env` con credenciales seguras a partir de `.env.example`.
 5. Ejecutar `docker compose up -d --build`.
 6. Publicar el puerto `8080` directamente o detras de un reverse proxy.
 7. Respaldar los volumenes Docker `opencredential_postgres_data` y `opencredential_adminweb_data`.
@@ -320,3 +321,12 @@ Y despues, desde la interfaz:
 1. `Probar conexion`
 2. `Ajustar tablas de AdminWeb`
 3. `Guardar configuracion`
+
+## Secretos y archivos que no deben versionarse
+
+- `App_Data/adminweb-runtime.json`
+- `App_Data/keys/`
+- `.env`
+- cookies exportadas
+- logs locales
+- artefactos de `bin/`, `obj/` y `artifacts/`
