@@ -6,6 +6,7 @@ public sealed class AdminSnapshot
 {
     public required List<Career> Careers { get; init; }
     public required List<Semester> Semesters { get; init; }
+    public List<GroupInfo> Groups { get; init; } = [];
     public required List<UserAccount> Users { get; init; }
     public required List<Computer> Computers { get; init; }
     public List<ComputedComputerState> ComputedComputers { get; init; } = [];
@@ -13,6 +14,7 @@ public sealed class AdminSnapshot
     public required List<RoomLayoutItem> RoomLayoutItems { get; init; }
     public required List<UsageRecord> UsageRecords { get; init; }
     public required List<AuditEntry> AuditEntries { get; init; }
+    public List<PortalPasswordResetTokenRecord> PortalPasswordResetTokens { get; init; } = [];
 }
 
 public sealed class DashboardResponse
@@ -25,6 +27,65 @@ public sealed class DashboardResponse
     public required List<TrendPoint> DailyUsageTrend { get; init; }
     public required List<ComputerStatusCard> ComputerCards { get; init; }
     public List<ComputedComputerState> SessionAlerts { get; init; } = [];
+}
+
+public sealed class ReportsResponse
+{
+    public required ReportKpis Kpis { get; init; }
+    public List<ChartPoint> UsageByCareer { get; init; } = [];
+    public List<ChartPoint> UsageBySemester { get; init; } = [];
+    public List<ChartPoint> UsageByRoom { get; init; } = [];
+    public List<ChartPoint> SessionsByOrigin { get; init; } = [];
+    public List<ReportMetricRow> TopUsers { get; init; } = [];
+    public List<ReportMetricRow> TopEquipment { get; init; } = [];
+    public List<ReportSessionRow> Sessions { get; init; } = [];
+}
+
+public sealed class ReportKpis
+{
+    public int SessionCount { get; init; }
+    public double TotalHours { get; init; }
+    public int UniqueUsers { get; init; }
+    public int ActivePrograms { get; init; }
+    public int ActiveRooms { get; init; }
+    public int OfflineRecoveredSessions { get; init; }
+    public int SupersededSessions { get; init; }
+    public int HeartbeatTimeoutSessions { get; init; }
+    public int UnexpectedShutdownSessions { get; init; }
+}
+
+public sealed class ReportMetricRow
+{
+    public required string Label { get; init; }
+    public string? SecondaryLabel { get; init; }
+    public double Hours { get; init; }
+    public int Sessions { get; init; }
+}
+
+public sealed class ReportSessionRow
+{
+    public int SessionId { get; init; }
+    public required string Username { get; init; }
+    public string FullName { get; init; } = string.Empty;
+    public string DocumentId { get; init; } = string.Empty;
+    public string? CareerName { get; init; }
+    public string? SemesterName { get; init; }
+    public List<string> Groups { get; init; } = [];
+    public required string Machine { get; init; }
+    public string? RoomName { get; init; }
+    public string? InventoryTag { get; init; }
+    public string? IpAddress { get; init; }
+    public string? SessionState { get; init; }
+    public string? SessionEndReason { get; init; }
+    public string? SessionOrigin { get; init; }
+    public string? OperationalStatus { get; init; }
+    public string? OperationalStatusLabel { get; init; }
+    public DateTime LoginStamp { get; init; }
+    public DateTime? LogoutStamp { get; init; }
+    public DateTime? LastHeartbeatAt { get; init; }
+    public double DurationHours { get; init; }
+    public bool IsRecoveredOffline { get; init; }
+    public bool IsOrphaned { get; init; }
 }
 
 public sealed class DashboardKpis
@@ -67,8 +128,18 @@ public sealed class UserAccount
     public int? SemesterId { get; set; }
     public bool Active { get; set; }
     public string HashMethod { get; set; } = "BCRYPT";
+    public List<GroupInfo> Groups { get; set; } = [];
+    public int FailedAttempts { get; set; }
+    public DateTime? LockedUntilUtc { get; set; }
+    public DateTime? LastAttemptAtUtc { get; set; }
     [JsonIgnore]
     public string? PasswordHash { get; set; }
+}
+
+public sealed class GroupInfo
+{
+    public int Id { get; init; }
+    public required string Name { get; set; }
 }
 
 public enum ComputerStatus
@@ -113,6 +184,8 @@ public sealed class LoginSessionSnapshot
     public string? SessionState { get; init; }
     public DateTime? LastHeartbeatAt { get; init; }
     public string? SessionEndReason { get; init; }
+    public string? SessionOrigin { get; init; }
+    public int? HeartbeatAgeSeconds { get; init; }
 }
 
 public sealed class ComputedComputerState
@@ -135,9 +208,17 @@ public sealed class ComputedComputerState
     public DateTime? LogoutStamp { get; init; }
     public DateTime? LastHeartbeatAt { get; init; }
     public string? SessionEndReason { get; init; }
+    public string? SessionOrigin { get; init; }
+    public string? OriginLabel { get; init; }
+    public List<string> AlertFlags { get; init; } = [];
     public int? HeartbeatAgeSeconds { get; init; }
     public bool IsStale { get; init; }
     public bool IsOrphaned { get; init; }
+    public bool HasRecoveredOfflineSession { get; init; }
+    public bool HasSessionWarning { get; init; }
+    public bool IsSuperseded { get; init; }
+    public bool IsUnexpectedShutdown { get; init; }
+    public bool IsHeartbeatTimeout { get; init; }
     public DateTime LastSeenUtc { get; init; }
 }
 
@@ -209,9 +290,14 @@ public sealed class ComputerStatusCard
     public string? OperationalStatus { get; init; }
     public string? SessionState { get; init; }
     public string? SessionEndReason { get; init; }
+    public string? SessionOrigin { get; init; }
+    public string? OriginLabel { get; init; }
+    public List<string> AlertFlags { get; init; } = [];
     public string? LastHeartbeatLabel { get; init; }
     public int? HeartbeatAgeSeconds { get; init; }
     public bool IsOrphaned { get; init; }
+    public bool HasRecoveredOfflineSession { get; init; }
+    public bool HasSessionWarning { get; init; }
 }
 
 public sealed class ImportUsersResult
@@ -284,6 +370,7 @@ public sealed class UserInput
     public bool Active { get; init; }
     public string HashMethod { get; init; } = "BCRYPT";
     public string? Password { get; init; }
+    public List<int> GroupIds { get; init; } = [];
 }
 
 public sealed class UsageRecordInput
@@ -307,6 +394,109 @@ public sealed class PasswordResetResult
     public required string Username { get; init; }
     public required string HashMethod { get; init; }
     public required string GeneratedPassword { get; init; }
+}
+
+public sealed class PortalLoginInput
+{
+    public required string Username { get; init; }
+    public required string Password { get; init; }
+}
+
+public sealed class PortalSessionInfo
+{
+    public bool Authenticated { get; init; }
+    public required string Username { get; init; }
+    public string FullName { get; init; } = string.Empty;
+    public List<string> Groups { get; init; } = [];
+}
+
+public sealed class PortalProfile
+{
+    public int UserId { get; init; }
+    public required string Username { get; init; }
+    public string FirstName { get; init; } = string.Empty;
+    public string LastName { get; init; } = string.Empty;
+    public string FullName { get; init; } = string.Empty;
+    public string Email { get; init; } = string.Empty;
+    public string DocumentId { get; init; } = string.Empty;
+    public int? CareerId { get; init; }
+    public string? CareerName { get; init; }
+    public int? SemesterId { get; init; }
+    public string? SemesterName { get; init; }
+    public bool Active { get; init; }
+    public string HashMethod { get; init; } = "BCRYPT";
+    public List<GroupInfo> Groups { get; init; } = [];
+}
+
+public sealed class PortalProfileUpdateInput
+{
+    public required string FirstName { get; init; }
+    public required string LastName { get; init; }
+    public required string Email { get; init; }
+}
+
+public sealed class PortalPasswordChangeInput
+{
+    public required string CurrentPassword { get; init; }
+    public required string NewPassword { get; init; }
+    public required string ConfirmPassword { get; init; }
+    public string HashMethod { get; init; } = "BCRYPT";
+}
+
+public sealed class PortalPasswordRecoveryInput
+{
+    public required string Username { get; init; }
+    public required string DocumentId { get; init; }
+    public required string Email { get; init; }
+    public string HashMethod { get; init; } = "BCRYPT";
+}
+
+public sealed class PortalPasswordRecoveryResult
+{
+    public bool Success { get; init; }
+    public required string Message { get; init; }
+    public string? ResetToken { get; init; }
+    public DateTime? ExpiresAtUtc { get; init; }
+    public string? DeliveryHint { get; init; }
+}
+
+public sealed class PortalPasswordResetWithTokenInput
+{
+    public required string Token { get; init; }
+    public required string NewPassword { get; init; }
+    public required string ConfirmPassword { get; init; }
+    public string HashMethod { get; init; } = "BCRYPT";
+}
+
+public sealed class PortalPasswordResetTokenRecord
+{
+    public int Id { get; init; }
+    public int? UserId { get; init; }
+    public required string Username { get; init; }
+    public required string Email { get; init; }
+    public required string Token { get; init; }
+    public DateTime CreatedUtc { get; init; }
+    public DateTime ExpiresAtUtc { get; init; }
+    public DateTime? ConsumedUtc { get; set; }
+}
+
+public sealed class PortalSessionEntry
+{
+    public int SessionId { get; init; }
+    public required string Machine { get; init; }
+    public string? RoomName { get; init; }
+    public string? InventoryTag { get; init; }
+    public string? SessionState { get; init; }
+    public string? SessionStateLabel { get; init; }
+    public string? SessionEndReason { get; init; }
+    public string? SessionOrigin { get; init; }
+    public string? OriginLabel { get; init; }
+    public string? OperationalStatus { get; init; }
+    public string? OperationalStatusLabel { get; init; }
+    public DateTime LoginStamp { get; init; }
+    public DateTime? LogoutStamp { get; init; }
+    public DateTime? LastHeartbeatAt { get; init; }
+    public double DurationHours { get; init; }
 }
 
 public sealed class AuditEntry
@@ -342,6 +532,7 @@ public sealed class AdminSessionInfo
     public bool Authenticated { get; init; }
     public required string Username { get; init; }
     public required string Role { get; init; }
+    public List<string> Groups { get; init; } = [];
     public bool AuthenticationEnabled { get; init; }
 }
 

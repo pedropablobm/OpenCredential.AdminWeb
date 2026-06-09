@@ -1506,8 +1506,7 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             ? $"GREATEST(0, EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - {activityReferenceExpression})))::INT"
             : $"GREATEST(0, TIMESTAMPDIFF(SECOND, {activityReferenceExpression}, CURRENT_TIMESTAMP))";
 
-        var latestSessions = new List<LoginSessionSnapshot>();
-        var latestByKey = new Dictionary<string, LoginSessionSnapshot>(StringComparer.OrdinalIgnoreCase);
+        var sessions = new List<LoginSessionSnapshot>();
         using (var command = CreateCommand(connection, $"SELECT dbid, loginstamp, logoutstamp, username, machine, ipaddress, {clientSessionIdExpression} AS client_session_id, {windowsSessionIdExpression} AS windows_session_id, {sessionStateExpression} AS session_state, {lastHeartbeatExpression} AS last_heartbeat_at, {sessionEndReasonExpression} AS session_end_reason, {sessionOriginExpression} AS session_origin, {heartbeatAgeSql} AS heartbeat_age_seconds FROM {Quote("login_sessions")} ORDER BY {activityReferenceExpression} DESC, loginstamp DESC, dbid DESC"))
         using (var reader = command.ExecuteReader())
         {
@@ -1529,19 +1528,21 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
                     SessionOrigin = ReadFlexibleString(reader, 11),
                     HeartbeatAgeSeconds = ReadFlexibleInt32(reader, 12)
                 };
-
-                var sessionKey = BuildSessionLookupKey(session);
-                if (string.IsNullOrWhiteSpace(sessionKey) || latestByKey.ContainsKey(sessionKey))
-                {
-                    continue;
-                }
-
-                latestByKey[sessionKey] = session;
-                latestSessions.Add(session);
+                sessions.Add(session);
             }
         }
 
-        return latestSessions;
+        var bestByMachine = BuildBestSessionLookup(sessions, session => session.Machine);
+        var bestByIp = BuildBestSessionLookup(sessions, session => session.IpAddress);
+
+        return bestByMachine.Values
+            .Concat(bestByIp.Values)
+            .GroupBy(session => session.DbId)
+            .Select(group => group.First())
+            .OrderByDescending(GetSessionActivityReferenceUtc)
+            .ThenByDescending(session => session.LoginStamp)
+            .ThenByDescending(session => session.DbId)
+            .ToList();
     }
 
     private static string TranslateSessionStateLabel(string? sessionState)
@@ -1805,21 +1806,14 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
 
     private List<ComputedComputerState> BuildComputedComputerStates(IReadOnlyCollection<Computer> computers, IReadOnlyCollection<LoginSessionSnapshot> latestSessions)
     {
-        var nowUtc = DateTime.UtcNow;
-        var sessionsByMachine = latestSessions
-            .Where(session => !string.IsNullOrWhiteSpace(session.Machine))
-            .GroupBy(session => session.Machine!, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
-        var sessionsByIp = latestSessions
-            .Where(session => !string.IsNullOrWhiteSpace(session.IpAddress))
-            .GroupBy(session => session.IpAddress!, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var sessionsByMachine = BuildBestSessionLookup(latestSessions, session => session.Machine);
+        var sessionsByIp = BuildBestSessionLookup(latestSessions, session => session.IpAddress);
 
         return computers
             .Select(computer =>
             {
                 var matchedSession = TryMatchSessionForComputer(computer, sessionsByMachine, sessionsByIp);
-                return BuildComputedComputerState(computer, matchedSession, nowUtc);
+                return BuildComputedComputerState(computer, matchedSession, DateTime.UtcNow);
             })
             .OrderBy(state => state.ComputerName, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -1957,7 +1951,7 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             ? Math.Max(0, (int)Math.Floor(heartbeatAge.Value.TotalSeconds))
             : session?.HeartbeatAgeSeconds;
         var sessionOrigin = CleanOptionalSessionValue(session?.SessionOrigin);
-        var originLabel = TranslateSessionOrigin(sessionOrigin);
+        var originLabel = RepositorySupport.TranslateSessionOrigin(sessionOrigin);
         var isRecoveredOffline = string.Equals(sessionOrigin, "offline_cache", StringComparison.OrdinalIgnoreCase);
         var isSuperseded = string.Equals(session?.SessionEndReason, "superseded_by_logon", StringComparison.OrdinalIgnoreCase);
         var isUnexpectedShutdown = string.Equals(session?.SessionEndReason, "unexpected_shutdown", StringComparison.OrdinalIgnoreCase);
@@ -1999,34 +1993,9 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
         };
     }
 
-    private static string? BuildSessionLookupKey(LoginSessionSnapshot session)
-    {
-        if (!string.IsNullOrWhiteSpace(session.Machine))
-        {
-            return $"machine:{session.Machine.Trim().ToLowerInvariant()}";
-        }
-
-        if (!string.IsNullOrWhiteSpace(session.IpAddress))
-        {
-            return $"ip:{session.IpAddress.Trim().ToLowerInvariant()}";
-        }
-
-        return null;
-    }
-
     private static string? CleanOptionalSessionValue(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-    }
-
-    private static string? TranslateSessionOrigin(string? origin)
-    {
-        return origin?.Trim().ToLowerInvariant() switch
-        {
-            "online" => "Online",
-            "offline_cache" => "Offline recuperado",
-            _ => CleanOptionalSessionValue(origin)
-        };
     }
 
     private static List<string> BuildAlertFlags(
@@ -2059,6 +2028,124 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
         }
 
         return flags;
+    }
+
+    private static Dictionary<string, LoginSessionSnapshot> BuildBestSessionLookup(
+        IEnumerable<LoginSessionSnapshot> sessions,
+        Func<LoginSessionSnapshot, string?> keySelector)
+    {
+        var lookup = new Dictionary<string, LoginSessionSnapshot>(StringComparer.OrdinalIgnoreCase);
+        var nowUtc = DateTime.UtcNow;
+
+        foreach (var session in sessions)
+        {
+            var key = RepositorySupport.CleanOptional(keySelector(session));
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                continue;
+            }
+
+            if (!lookup.TryGetValue(key, out var current) || IsBetterSessionCandidate(session, current, nowUtc))
+            {
+                lookup[key] = session;
+            }
+        }
+
+        return lookup;
+    }
+
+    private static bool IsBetterSessionCandidate(LoginSessionSnapshot candidate, LoginSessionSnapshot current, DateTime nowUtc)
+    {
+        var candidatePriority = GetSessionCandidatePriority(candidate, nowUtc);
+        var currentPriority = GetSessionCandidatePriority(current, nowUtc);
+        if (candidatePriority != currentPriority)
+        {
+            return candidatePriority > currentPriority;
+        }
+
+        var candidateActivity = GetSessionActivityReferenceUtc(candidate);
+        var currentActivity = GetSessionActivityReferenceUtc(current);
+        var activityComparison = DateTime.Compare(candidateActivity, currentActivity);
+        if (activityComparison != 0)
+        {
+            return activityComparison > 0;
+        }
+
+        var candidateHasClientSession = !string.IsNullOrWhiteSpace(candidate.ClientSessionId);
+        var currentHasClientSession = !string.IsNullOrWhiteSpace(current.ClientSessionId);
+        if (candidateHasClientSession != currentHasClientSession)
+        {
+            return candidateHasClientSession;
+        }
+
+        var candidateHasWindowsSession = candidate.WindowsSessionId.HasValue;
+        var currentHasWindowsSession = current.WindowsSessionId.HasValue;
+        if (candidateHasWindowsSession != currentHasWindowsSession)
+        {
+            return candidateHasWindowsSession;
+        }
+
+        if (candidate.WindowsSessionId.HasValue && current.WindowsSessionId.HasValue &&
+            candidate.WindowsSessionId.Value != current.WindowsSessionId.Value)
+        {
+            return candidate.WindowsSessionId.Value > current.WindowsSessionId.Value;
+        }
+
+        var loginComparison = DateTime.Compare(candidate.LoginStamp, current.LoginStamp);
+        if (loginComparison != 0)
+        {
+            return loginComparison > 0;
+        }
+
+        return candidate.DbId > current.DbId;
+    }
+
+    private static int GetSessionCandidatePriority(LoginSessionSnapshot session, DateTime nowUtc)
+    {
+        var heartbeatSeconds = session.HeartbeatAgeSeconds
+            ?? Math.Max(0, (int)Math.Floor((nowUtc - GetSessionActivityReferenceUtc(session)).TotalSeconds));
+        var sessionState = CleanOptionalSessionValue(session.SessionState)?.ToLowerInvariant();
+        var sessionEndReason = CleanOptionalSessionValue(session.SessionEndReason)?.ToLowerInvariant();
+        var isClosed = session.LogoutStamp.HasValue || string.Equals(sessionState, "ended", StringComparison.OrdinalIgnoreCase);
+        var isFresh = heartbeatSeconds <= HeartbeatFreshThreshold.TotalSeconds;
+        var isWithinStaleWindow = heartbeatSeconds <= HeartbeatStaleThreshold.TotalSeconds;
+
+        if (sessionState == "active" && !isClosed)
+        {
+            return isFresh ? 600 : isWithinStaleWindow ? 540 : 320;
+        }
+
+        if (sessionState == "locked" && !isClosed)
+        {
+            return isFresh ? 580 : isWithinStaleWindow ? 520 : 310;
+        }
+
+        if (sessionState == "disconnected" && !isClosed)
+        {
+            return isFresh ? 560 : isWithinStaleWindow ? 500 : 300;
+        }
+
+        if (!isClosed)
+        {
+            return isWithinStaleWindow ? 360 : 290;
+        }
+
+        if (sessionEndReason == "superseded_by_logon")
+        {
+            return 220;
+        }
+
+        if (sessionEndReason == "heartbeat_timeout" || sessionEndReason == "unexpected_shutdown")
+        {
+            return 240;
+        }
+
+        return 260;
+    }
+
+    private static DateTime GetSessionActivityReferenceUtc(LoginSessionSnapshot session)
+    {
+        return session.LastHeartbeatAt ?? session.LoginStamp;
     }
 
     private static OperationalComputerStatus DeriveOperationalStatus(string? sessionState, DateTime? logoutStamp, int heartbeatAgeSeconds)

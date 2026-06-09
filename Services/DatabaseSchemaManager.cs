@@ -70,6 +70,24 @@ internal static class DatabaseSchemaManager
                 ALTER TABLE "computers" ADD COLUMN IF NOT EXISTS "ip_address" VARCHAR(45) NULL
                 """,
                 """
+                ALTER TABLE "login_sessions" ADD COLUMN IF NOT EXISTS "client_session_id" VARCHAR(100) NULL
+                """,
+                """
+                ALTER TABLE "login_sessions" ADD COLUMN IF NOT EXISTS "windows_session_id" INT NULL
+                """,
+                """
+                ALTER TABLE "login_sessions" ADD COLUMN IF NOT EXISTS "session_state" VARCHAR(30) NULL
+                """,
+                """
+                ALTER TABLE "login_sessions" ADD COLUMN IF NOT EXISTS "last_heartbeat_at" TIMESTAMP NULL
+                """,
+                """
+                ALTER TABLE "login_sessions" ADD COLUMN IF NOT EXISTS "session_end_reason" VARCHAR(50) NULL
+                """,
+                """
+                ALTER TABLE "login_sessions" ADD COLUMN IF NOT EXISTS "session_origin" VARCHAR(30) NULL
+                """,
+                """
                 CREATE TABLE IF NOT EXISTS "rooms" (
                   "id" INT PRIMARY KEY,
                   "name" VARCHAR(150) NOT NULL,
@@ -149,6 +167,39 @@ internal static class DatabaseSchemaManager
                   "remote_ip" VARCHAR(64) NULL,
                   "created_utc" TIMESTAMP NOT NULL
                 )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS "portal_password_reset_tokens" (
+                  "id" INT PRIMARY KEY,
+                  "user_id" INT NULL,
+                  "username" VARCHAR(50) NOT NULL,
+                  "email" VARCHAR(200) NOT NULL,
+                  "reset_token" VARCHAR(120) NOT NULL,
+                  "created_utc" TIMESTAMP NOT NULL,
+                  "expires_utc" TIMESTAMP NOT NULL,
+                  "consumed_utc" TIMESTAMP NULL
+                )
+                """,
+                """
+                ALTER TABLE "portal_password_reset_tokens" ADD COLUMN IF NOT EXISTS "user_id" INT NULL
+                """,
+                """
+                ALTER TABLE "portal_password_reset_tokens" ADD COLUMN IF NOT EXISTS "username" VARCHAR(50) NOT NULL DEFAULT ''
+                """,
+                """
+                ALTER TABLE "portal_password_reset_tokens" ADD COLUMN IF NOT EXISTS "email" VARCHAR(200) NOT NULL DEFAULT ''
+                """,
+                """
+                ALTER TABLE "portal_password_reset_tokens" ADD COLUMN IF NOT EXISTS "reset_token" VARCHAR(120) NOT NULL DEFAULT ''
+                """,
+                """
+                ALTER TABLE "portal_password_reset_tokens" ADD COLUMN IF NOT EXISTS "created_utc" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                """,
+                """
+                ALTER TABLE "portal_password_reset_tokens" ADD COLUMN IF NOT EXISTS "expires_utc" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                """,
+                """
+                ALTER TABLE "portal_password_reset_tokens" ADD COLUMN IF NOT EXISTS "consumed_utc" TIMESTAMP NULL
                 """
             };
         }
@@ -206,6 +257,24 @@ internal static class DatabaseSchemaManager
             """,
             """
             ALTER TABLE `computers` ADD COLUMN IF NOT EXISTS `ip_address` VARCHAR(45) NULL
+            """,
+            """
+            ALTER TABLE `login_sessions` ADD COLUMN IF NOT EXISTS `client_session_id` VARCHAR(100) NULL
+            """,
+            """
+            ALTER TABLE `login_sessions` ADD COLUMN IF NOT EXISTS `windows_session_id` INT NULL
+            """,
+            """
+            ALTER TABLE `login_sessions` ADD COLUMN IF NOT EXISTS `session_state` VARCHAR(30) NULL
+            """,
+            """
+            ALTER TABLE `login_sessions` ADD COLUMN IF NOT EXISTS `last_heartbeat_at` DATETIME NULL
+            """,
+            """
+            ALTER TABLE `login_sessions` ADD COLUMN IF NOT EXISTS `session_end_reason` VARCHAR(50) NULL
+            """,
+            """
+            ALTER TABLE `login_sessions` ADD COLUMN IF NOT EXISTS `session_origin` VARCHAR(30) NULL
             """,
             """
             CREATE TABLE IF NOT EXISTS `rooms` (
@@ -291,6 +360,40 @@ internal static class DatabaseSchemaManager
               `created_utc` DATETIME NOT NULL,
               PRIMARY KEY (`id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS `portal_password_reset_tokens` (
+              `id` INT NOT NULL,
+              `user_id` INT NULL,
+              `username` VARCHAR(50) NOT NULL,
+              `email` VARCHAR(200) NOT NULL,
+              `reset_token` VARCHAR(120) NOT NULL,
+              `created_utc` DATETIME NOT NULL,
+              `expires_utc` DATETIME NOT NULL,
+              `consumed_utc` DATETIME NULL,
+              PRIMARY KEY (`id`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """,
+            """
+            ALTER TABLE `portal_password_reset_tokens` ADD COLUMN IF NOT EXISTS `user_id` INT NULL
+            """,
+            """
+            ALTER TABLE `portal_password_reset_tokens` ADD COLUMN IF NOT EXISTS `username` VARCHAR(50) NOT NULL DEFAULT ''
+            """,
+            """
+            ALTER TABLE `portal_password_reset_tokens` ADD COLUMN IF NOT EXISTS `email` VARCHAR(200) NOT NULL DEFAULT ''
+            """,
+            """
+            ALTER TABLE `portal_password_reset_tokens` ADD COLUMN IF NOT EXISTS `reset_token` VARCHAR(120) NOT NULL DEFAULT ''
+            """,
+            """
+            ALTER TABLE `portal_password_reset_tokens` ADD COLUMN IF NOT EXISTS `created_utc` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            """,
+            """
+            ALTER TABLE `portal_password_reset_tokens` ADD COLUMN IF NOT EXISTS `expires_utc` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            """,
+            """
+            ALTER TABLE `portal_password_reset_tokens` ADD COLUMN IF NOT EXISTS `consumed_utc` DATETIME NULL
             """
         };
     }

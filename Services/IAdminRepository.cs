@@ -6,6 +6,17 @@ public interface IAdminRepository
 {
     AdminSnapshot GetSnapshot();
     DashboardResponse GetDashboard(int rangeDays, int? careerId, int? semesterId, string? status);
+    ReportsResponse GetReports(DateTime fromUtc, DateTime toUtc, int? careerId, int? semesterId, int? groupId, string? username, string? sessionOrigin, string? sessionState, string? operationalStatus);
+    List<GroupInfo> GetGroups();
+    UserAccount? FindUserByUsername(string username);
+    void RegisterFailedSignIn(string username, int maxFailedAttempts, int lockoutMinutes);
+    void ResetFailedSignIn(string username);
+    PortalProfile? GetPortalProfile(string username);
+    PortalProfile? UpdatePortalProfile(string username, PortalProfileUpdateInput input);
+    PasswordResetResult? UpdatePasswordByUsername(string username, string plainPassword, string hashMethod);
+    PortalPasswordRecoveryResult RecoverPortalPassword(PortalPasswordRecoveryInput input, int tokenLifetimeMinutes);
+    bool ResetPortalPasswordWithToken(PortalPasswordResetWithTokenInput input, out string message);
+    List<PortalSessionEntry> GetPortalSessions(string username, int take);
     List<AuditEntry> GetAuditEntries(int take);
     AuditEntry RecordAudit(AuditEntryInput input);
     Career CreateCareer(CareerInput input);
