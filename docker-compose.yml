@@ -4,9 +4,9 @@ services:
     container_name: opencredential-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-opencredential_admin}
-      POSTGRES_USER: ${POSTGRES_USER:-opencredential}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opencredential_secure}
+      POSTGRES_DB: ${POSTGRES_DB:?Define POSTGRES_DB en tu archivo .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Define POSTGRES_USER en tu archivo .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en tu archivo .env}
     volumes:
       - opencredential_postgres_data:/var/lib/postgresql/data
 
@@ -22,8 +22,8 @@ services:
       - "${ADMINWEB_PORT:-8080}:8080"
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      AdminAuth__Username: ${ADMIN_USERNAME:-admin}
-      AdminAuth__Password: ${ADMIN_PASSWORD:-AdminWeb2026!}
+      AdminAuth__Username: ${ADMIN_USERNAME:?Define ADMIN_USERNAME en tu archivo .env}
+      AdminAuth__Password: ${ADMIN_PASSWORD:?Define ADMIN_PASSWORD en tu archivo .env}
       AdminAuth__Role: ${ADMIN_ROLE:-SuperAdmin}
       Database__Mode: Sql
       Database__Provider: PostgreSql
