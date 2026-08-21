@@ -1,6 +1,6 @@
-# OpenCredential AdminWeb
+# OpenCredential Admin Web
 
-Interfaz web administrativa para gestionar:
+Interfaz web administrativa para gestionar la aplicación OpenCredential. Permite gestionar:
 
 - usuarios
 - carreras
