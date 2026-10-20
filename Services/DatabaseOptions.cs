@@ -6,4 +6,5 @@ public sealed class DatabaseOptions
     public string Provider { get; set; } = "PostgreSql";
     public string ConnectionString { get; set; } = string.Empty;
     public bool AutoInitialize { get; set; } = true;
+    public bool SeedDemoData { get; set; }
 }

@@ -44,9 +44,9 @@ const autoRefreshIntervalMs = 20000;
 
 async function fetchJson(url, options) {
     const response = await fetch(url, {
-        headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        ...options
+        ...options,
+        headers: { "Content-Type": "application/json", ...options?.headers, "X-OpenCredential-Request": "1" }
     });
 
     if (response.status === 401) {
@@ -84,7 +84,7 @@ async function loadAll(options = {}) {
     const { background = false } = options;
     state.isLoading = true;
 
-    if (!background) {
+    if (!background && state.session?.role === "SuperAdmin") {
         await loadDatabaseConfiguration();
     }
 
@@ -104,7 +104,7 @@ async function loadAll(options = {}) {
         }
 
         try {
-            state.reports = await fetchJson(`/api/reports?${buildReportsQuery()}`);
+            state.reports = canView("reports") ? await fetchJson(`/api/reports?${buildReportsQuery()}`) : createEmptyReports();
         } catch (error) {
             showDataLoadError(error);
             state.reports = createEmptyReports();
@@ -276,6 +276,7 @@ function renderApp() {
     renderAuditModule();
     updateSessionChrome();
     updateTopbarDate();
+    applyRoleVisibility();
 }
 
 function renderReportsModule() {
@@ -301,8 +302,8 @@ function renderReportsModule() {
         "reportTopUsersTable",
         ["Usuario", "Nombre", "Horas", "Sesiones"],
         (reports.topUsers ?? []).map(item => [
-            item.label,
-            item.secondaryLabel || "Sin usuario identificado",
+            escapeHtml(item.label),
+            escapeHtml(item.secondaryLabel || "Sin usuario identificado"),
             item.hours,
             item.sessions
         ]),
@@ -313,8 +314,8 @@ function renderReportsModule() {
         "reportTopEquipmentTable",
         ["Equipo", "Inventario", "Horas", "Sesiones"],
         (reports.topEquipment ?? []).map(item => [
-            item.label,
-            item.secondaryLabel || "Sin inventario",
+            escapeHtml(item.label),
+            escapeHtml(item.secondaryLabel || "Sin inventario"),
             item.hours,
             item.sessions
         ]),
@@ -327,11 +328,11 @@ function renderReportsModule() {
         (reports.sessions ?? []).map(item => [
             formatAuditDate(item.loginStamp),
             `${escapeHtml(formatReportSessionUsername(item))}<br><span class="support-text">${escapeHtml(formatReportSessionSecondary(item))}</span>`,
-            item.careerName || "Sin carrera",
-            item.semesterName || "Sin semestre",
+            escapeHtml(item.careerName || "Sin carrera"),
+            escapeHtml(item.semesterName || "Sin semestre"),
             renderInlineBadges(item.groups || []),
-            item.machine,
-            item.roomName || "Sin sala",
+            escapeHtml(item.machine),
+            escapeHtml(item.roomName || "Sin sala"),
             renderReportSessionOrigin(item),
             renderReportSessionState(item),
             renderStatusTag(item.operationalStatusLabel || item.operationalStatus || "Disponible", item.operationalStatus || "Available"),
@@ -397,7 +398,7 @@ function renderReportSessionState(item) {
     const reasonLabel = translateSessionEndReasonLabel(item?.sessionEndReason);
     return reasonLabel
         ? `${escapeHtml(stateLabel)}<br><span class="support-text">${escapeHtml(reasonLabel)}</span>`
-        : stateLabel;
+        : escapeHtml(stateLabel);
 }
 
 function exportReportsCsv() {
@@ -526,16 +527,21 @@ function renderUsersModule() {
         "usersTable",
         ["Usuario", "Nombre", "Carrera", "Semestre", "Grupos", "Hash", "Estado", "Acciones"],
         users.map(item => [
-            item.username,
-            `${item.firstName} ${item.lastName}<br><span class="support-text">${item.email}</span>`,
-            getLookupName(snapshot.careers, item.careerId),
-            getLookupName(snapshot.semesters, item.semesterId),
+            escapeHtml(item.username),
+            `${escapeHtml(item.firstName)} ${escapeHtml(item.lastName)}<br><span class="support-text">${escapeHtml(item.email)}</span>`,
+            escapeHtml(getLookupName(snapshot.careers, item.careerId)),
+            escapeHtml(getLookupName(snapshot.semesters, item.semesterId)),
             renderUserGroupsBadges(item.groups),
-            item.hashMethod || "SIN DEFINIR",
+            escapeHtml(item.hashMethod || "SIN DEFINIR"),
             renderStatusTag(item.active ? "Activo" : "Inactivo"),
             tableActions(
                 () => editUser(item),
-                () => deleteEntity(`/api/users/${item.id}`)
+                async () => {
+                    if (!window.confirm("¿Desactivar esta cuenta conservando su historial?")) return;
+                    try { await fetchJson(`/api/users/${item.id}/deactivate`, { method: "POST" }); await loadAll(); }
+                    catch (error) { window.alert(error.message); }
+                },
+                "Desactivar", "users"
             )
         ]),
         "No hay usuarios para los filtros seleccionados."
@@ -576,14 +582,15 @@ function renderEquipmentModule() {
         "computersTable",
         ["Equipo", "Ubicacion", "Inventario", "IP", "Estado operativo", "Acciones"],
         filteredComputers.map(item => [
-            item.name,
-            item.location,
-            item.inventoryTag,
-            item.ipAddress || "Sin IP",
+            escapeHtml(item.name),
+            escapeHtml(item.location),
+            escapeHtml(item.inventoryTag),
+            escapeHtml(item.ipAddress || "Sin IP"),
             renderStatusTag(item.statusLabel, item.statusKey),
             tableActions(
                 () => editComputer(inventoryById.get(item.id) ?? item),
-                () => deleteEntity(`/api/computers/${item.id}`)
+                () => deleteEntity(`/api/computers/${item.id}`),
+                "Eliminar", "equipment"
             )
         ]),
         "No hay equipos para los filtros seleccionados."
@@ -609,7 +616,7 @@ function renderAcademicModule() {
         "careersTable",
         ["Nombre", "Estado", "Acciones"],
         careers.map(item => [
-            item.name,
+            escapeHtml(item.name),
             renderStatusTag(item.active ? "Activa" : "Inactiva"),
             tableActions(
                 () => editCareer(item),
@@ -623,7 +630,7 @@ function renderAcademicModule() {
         "semestersTable",
         ["Nombre", "Estado", "Acciones"],
         semesters.map(item => [
-            item.name,
+            escapeHtml(item.name),
             renderStatusTag(item.active ? "Activo" : "Inactivo"),
             tableActions(
                 () => editSemester(item),
@@ -658,11 +665,11 @@ function renderAuditModule() {
         ["Fecha", "Actor", "Accion", "Entidad", "Detalle", "IP"],
         entries.map(item => [
             item.createdUtc ? formatAuditDate(item.createdUtc) : "",
-            item.actorUsername,
-            item.action,
-            `${item.entityType}<br><span class="support-text">${item.entityKey}</span>`,
-            item.summary,
-            item.remoteIp || "Sin IP"
+            escapeHtml(item.actorUsername),
+            escapeHtml(item.action),
+            `${escapeHtml(item.entityType)}<br><span class="support-text">${escapeHtml(item.entityKey)}</span>`,
+            escapeHtml(item.summary),
+            escapeHtml(item.remoteIp || "Sin IP")
         ]),
         "Todavia no hay eventos de auditoria."
     );
@@ -685,7 +692,7 @@ function renderBars(hostId, items, suffix) {
     host.innerHTML = items.length
         ? items.map(item => `
             <div class="bar-row">
-                <strong>${item.label}</strong>
+                <strong>${escapeHtml(item.label)}</strong>
                 <div class="bar-track">
                     <div class="bar-fill" style="width:${(item.value / max) * 100}%"></div>
                 </div>
@@ -727,9 +734,9 @@ function renderOverviewEquipmentAlerts(computers) {
                 <div class="activity-main">
                     <span class="status-dot ${getStatusToneClass(item.statusKey)}"></span>
                     <div>
-                        <strong>${item.name}</strong>
-                        <div class="support-text">${item.location}</div>
-                        <div class="support-text">${item.currentUsername || "Sin usuario actual"} · ${item.lastSeenUtc ? formatAuditDate(item.lastSeenUtc) : "Sin reporte"}</div>
+                        <strong>${escapeHtml(item.name)}</strong>
+                        <div class="support-text">${escapeHtml(item.location)}</div>
+                        <div class="support-text">${escapeHtml(item.currentUsername || "Sin usuario actual")} · ${item.lastSeenUtc ? formatAuditDate(item.lastSeenUtc) : "Sin reporte"}</div>
                         ${renderSessionMetadata(item)}
                     </div>
                 </div>
@@ -748,9 +755,9 @@ function renderOverviewAudit(entries) {
                 <div class="activity-main">
                     <span class="status-dot success"></span>
                     <div>
-                        <strong>${item.action}</strong>
-                        <div class="support-text">${item.actorUsername} · ${item.entityType}</div>
-                        <div class="support-text">${item.summary}</div>
+                        <strong>${escapeHtml(item.action)}</strong>
+                        <div class="support-text">${escapeHtml(item.actorUsername)} · ${escapeHtml(item.entityType)}</div>
+                        <div class="support-text">${escapeHtml(item.summary)}</div>
                     </div>
                 </div>
                 <span class="support-text">${item.createdUtc ? formatAuditDate(item.createdUtc) : ""}</span>
@@ -771,9 +778,9 @@ function renderEquipmentActivity(computers) {
                 <div class="activity-main">
                     <span class="status-dot ${getStatusToneClass(item.statusKey)}"></span>
                     <div>
-                        <strong>${item.name}</strong>
-                        <div class="support-text">${item.location} · ${item.ipAddress || "Sin IP"}</div>
-                        <div class="support-text">${item.currentUsername || "Sin usuario actual"}${item.sessionState ? ` · ${translateStatus(item.sessionState)}` : ""}</div>
+                        <strong>${escapeHtml(item.name)}</strong>
+                        <div class="support-text">${escapeHtml(item.location)} · ${escapeHtml(item.ipAddress || "Sin IP")}</div>
+                        <div class="support-text">${escapeHtml(item.currentUsername || "Sin usuario actual")}${item.sessionState ? ` · ${escapeHtml(translateStatus(item.sessionState))}` : ""}</div>
                         ${renderSessionMetadata(item)}
                     </div>
                 </div>
@@ -869,8 +876,8 @@ function renderRoomMap(snapshot, filteredComputers) {
     if (!activeItem) {
         detailHost.innerHTML = `
             <div class="detail-card">
-                <p class="section-label">Sala ${room.code}</p>
-                <h4>${room.name}</h4>
+                <p class="section-label">Sala ${escapeHtml(room.code)}</p>
+                <h4>${escapeHtml(room.name)}</h4>
                 <p class="support-text">Esta sala no tiene elementos configurados todavia. Usa "Configurar mapa visual" para definir la distribucion flotante.</p>
             </div>
         `;
@@ -882,17 +889,17 @@ function renderRoomMap(snapshot, filteredComputers) {
         <div class="detail-card">
             <p class="section-label">Elemento seleccionado</p>
             <h4>${escapeHtml(activeItem.label)}</h4>
-            <p><strong>Sala:</strong> ${room.name}</p>
+            <p><strong>Sala:</strong> ${escapeHtml(room.name)}</p>
             <p><strong>Tipo:</strong> ${getRoomItemTypeLabel(activeItem.itemType)}</p>
             <p><strong>Posicion:</strong> X ${activeItem.x}, Y ${activeItem.y}</p>
             <p><strong>Tamano:</strong> ${activeItem.width} × ${activeItem.height}</p>
-            <p><strong>Equipo:</strong> ${computer?.name || "Sin equipo asignado"}</p>
-            <p><strong>Inventario:</strong> ${computer?.inventoryTag || "No aplica"}</p>
-            <p><strong>IP:</strong> ${computer?.ipAddress || "Sin IP"}</p>
-            <p><strong>Usuario actual:</strong> ${computer?.currentUsername || "Sin asignar"}</p>
+            <p><strong>Equipo:</strong> ${escapeHtml(computer?.name || "Sin equipo asignado")}</p>
+            <p><strong>Inventario:</strong> ${escapeHtml(computer?.inventoryTag || "No aplica")}</p>
+            <p><strong>IP:</strong> ${escapeHtml(computer?.ipAddress || "Sin IP")}</p>
+            <p><strong>Usuario actual:</strong> ${escapeHtml(computer?.currentUsername || "Sin asignar")}</p>
             <p><strong>Estado:</strong> ${computer ? renderStatusTag(computer.statusLabel, computer.statusKey) : renderStatusTag(deriveLayoutItemStatusLabel(activeItem, computer))}</p>
-            <p><strong>Sesion:</strong> ${computer?.sessionState ? translateStatus(computer.sessionState) : "Sin sesion"}</p>
-            <p><strong>Origen:</strong> ${computer?.originLabel || "No aplica"}</p>
+            <p><strong>Sesion:</strong> ${escapeHtml(computer?.sessionState ? translateStatus(computer.sessionState) : "Sin sesion")}</p>
+            <p><strong>Origen:</strong> ${escapeHtml(computer?.originLabel || "No aplica")}</p>
             <div class="detail-flags">${computer ? renderSessionFlags(computer, false) : ""}</div>
             <p><strong>Heartbeat:</strong> ${computer?.lastHeartbeatAt ? formatAuditDate(computer.lastHeartbeatAt) : "Sin heartbeat"}</p>
             <p><strong>Ultimo reporte:</strong> ${computer?.lastSeenUtc ? formatAuditDate(computer.lastSeenUtc) : "Sin dato"}</p>
@@ -1363,7 +1370,8 @@ function createClientId(prefix) {
     return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-function tableActions(onEdit, onDelete) {
+function tableActions(onEdit, onDelete, deleteLabel = "Eliminar", permission = "academic") {
+    if (!canManage(permission)) return '<span class="support-text">Solo lectura</span>';
     const editId = createClientId("edit");
     const deleteId = createClientId("delete");
     queueMicrotask(() => {
@@ -1373,7 +1381,7 @@ function tableActions(onEdit, onDelete) {
     return `
         <div class="table-actions">
             <button type="button" class="btn btn-secondary" id="${editId}">Editar</button>
-            <button type="button" class="btn btn-secondary" id="${deleteId}">Eliminar</button>
+            <button type="button" class="btn btn-secondary" id="${deleteId}">${escapeHtml(deleteLabel)}</button>
         </div>
     `;
 }
@@ -1392,7 +1400,7 @@ function renderStatusTag(label, statusKey = "") {
         InUse: "tag-amber"
     }[normalizedStatus] || "tag-green";
 
-    return `<span class="tag ${className}">${label}</span>`;
+    return `<span class="tag ${className}">${escapeHtml(label)}</span>`;
 }
 
 function getLookupName(items, id) {
@@ -1716,6 +1724,37 @@ function applySession(session) {
     pageShell.classList.toggle("is-hidden", !session?.authenticated);
     updateSessionChrome();
     syncAutoRefresh();
+    applyRoleVisibility();
+}
+
+function canManage(permission) {
+    const role = state.session?.role;
+    return role === "SuperAdmin" || (permission === "equipment" ? role === "Operator" : role === "Coordinator");
+}
+
+function canView(view) {
+    const role = state.session?.role;
+    if (["audit", "configuration"].includes(view)) return role === "SuperAdmin";
+    if (["users", "import"].includes(view)) return canManage("users");
+    if (view === "reports") return ["SuperAdmin", "Coordinator", "Operator"].includes(role);
+    return !!state.session?.authenticated;
+}
+
+function applyRoleVisibility() {
+    document.querySelectorAll("[data-view]").forEach(button => { button.hidden = !canView(button.dataset.view); });
+    const controls = {
+        users: ["quickNewUserBtn", "quickImportBtn", "newUserBtn"],
+        academic: ["academicActionBtn"],
+        equipment: ["quickNewComputerBtn", "newComputerBtn", "newRoomBtn", "editRoomBtn", "editLayoutBtn"]
+    };
+    Object.entries(controls).forEach(([permission, ids]) => ids.forEach(id => {
+        const button = document.getElementById(id);
+        if (button) button.hidden = !canManage(permission);
+    }));
+    if (state.session?.authenticated && !canView(state.currentView)) {
+        state.currentView = "overview";
+        syncViewState();
+    }
 }
 
 function syncAutoRefresh() {
@@ -1893,7 +1932,7 @@ function buildComputerOptions(computers, selectedValue, currentLayoutItemId = nu
         if (assignedComputerIds.has(String(computer.id)) && String(computer.id) !== current) {
             return;
         }
-        options.push(`<option value="${computer.id}" ${String(computer.id) === current ? "selected" : ""}>${computer.name} · ${computer.location}</option>`);
+        options.push(`<option value="${computer.id}" ${String(computer.id) === current ? "selected" : ""}>${escapeHtml(computer.name)} · ${escapeHtml(computer.location)}</option>`);
     });
     return options.join("");
 }
@@ -1976,6 +2015,7 @@ function bindForms() {
     document.getElementById("logoutBtn").addEventListener("click", async () => {
         await fetch("/api/auth/logout", {
             method: "POST",
+            headers: { "X-OpenCredential-Request": "1" },
             credentials: "same-origin"
         });
         handleUnauthorized();
@@ -2223,11 +2263,19 @@ function bindForms() {
         const formData = new FormData();
         formData.append("file", fileInput.files[0]);
 
+        const resultHost = document.getElementById("importResult");
+        const previewResponse = await fetch("/api/import/users?preview=true", {
+            method: "POST", headers: { "X-OpenCredential-Request": "1" }, body: formData
+        });
+        const preview = await previewResponse.json();
+        if (!previewResponse.ok) { resultHost.textContent = preview.message || preview.title || "No fue posible validar el archivo."; return; }
+        resultHost.textContent = `Previsualizacion: ${preview.imported} nuevos, ${preview.updated} actualizaciones. ${preview.warnings.join(" | ")}`;
+        if (!window.confirm(`Se importaran ${preview.imported} usuarios y se actualizaran ${preview.updated}. Las filas invalidas se omitiran. ¿Continuar?`)) return;
         const response = await fetch("/api/import/users", {
-            method: "POST",
-            body: formData
+            method: "POST", headers: { "X-OpenCredential-Request": "1" }, body: formData
         });
         const result = await response.json();
+        if (!response.ok) { resultHost.textContent = result.message || result.title || "No fue posible importar."; return; }
         document.getElementById("importResult").textContent =
             `Importados: ${result.imported}. Actualizados: ${result.updated}. ${result.warnings.length ? result.warnings.join(" | ") : "Sin advertencias."}`;
         event.target.reset();
@@ -2424,7 +2472,8 @@ function toUtcDateString(value, endOfDay) {
         return "";
     }
 
-    return `${value}T${endOfDay ? "23:59:59" : "00:00:00"}Z`;
+    const [year, month, day] = value.split("-").map(Number);
+    return new Date(year, month - 1, day, endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0, endOfDay ? 999 : 0).toISOString();
 }
 
 function getDatabaseConfigPayload() {
@@ -2451,23 +2500,33 @@ function formatAuditDate(value) {
 }
 
 function generatePassword(length = 14) {
+    const randomIndex = limit => {
+        const buffer = new Uint32Array(1);
+        const maximum = Math.floor(0x100000000 / limit) * limit;
+        do { globalThis.crypto.getRandomValues(buffer); } while (buffer[0] >= maximum);
+        return buffer[0] % limit;
+    };
     const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
     const lower = "abcdefghijkmnopqrstuvwxyz";
     const digits = "23456789";
     const symbols = "!@#$%*?";
     const all = upper + lower + digits + symbols;
     const required = [
-        upper[Math.floor(Math.random() * upper.length)],
-        lower[Math.floor(Math.random() * lower.length)],
-        digits[Math.floor(Math.random() * digits.length)],
-        symbols[Math.floor(Math.random() * symbols.length)]
+        upper[randomIndex(upper.length)],
+        lower[randomIndex(lower.length)],
+        digits[randomIndex(digits.length)],
+        symbols[randomIndex(symbols.length)]
     ];
 
     while (required.length < length) {
-        required.push(all[Math.floor(Math.random() * all.length)]);
+        required.push(all[randomIndex(all.length)]);
     }
 
-    return required.sort(() => Math.random() - 0.5).join("");
+    for (let index = required.length - 1; index > 0; index--) {
+        const other = randomIndex(index + 1);
+        [required[index], required[other]] = [required[other], required[index]];
+    }
+    return required.join("");
 }
 
 function capitalize(value) {
@@ -2485,7 +2544,8 @@ function getSelectedOptionText(selectId) {
 }
 
 function formatCsvCell(value) {
-    const text = String(value ?? "");
+    let text = String(value ?? "");
+    if (/^[\s]*[=+@\-\t\r]/.test(text)) text = "'" + text;
     if (!/[",\r\n]/.test(text)) {
         return text;
     }
@@ -2557,8 +2617,9 @@ function initializeReportFilters() {
     const today = new Date();
     const from = new Date();
     from.setDate(today.getDate() - 30);
-    document.getElementById("reportToDate").value = today.toISOString().slice(0, 10);
-    document.getElementById("reportFromDate").value = from.toISOString().slice(0, 10);
+    const localDate = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    document.getElementById("reportToDate").value = localDate(today);
+    document.getElementById("reportFromDate").value = localDate(from);
 }
 
 let debounceHandle = null;

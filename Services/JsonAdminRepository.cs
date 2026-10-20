@@ -8,15 +8,14 @@ namespace OpenCredential.AdminWeb.Services;
 public sealed class JsonAdminRepository : IAdminRepository
 {
     private readonly object _sync = new();
-    private readonly JsonSerializerOptions _serializerOptions = new(JsonSerializerDefaults.Web)
-    {
-        WriteIndented = true
-    };
+    private readonly JsonSerializerOptions _serializerOptions = SnapshotStorage.CreateOptions();
     private readonly string _dataPath;
     private AdminSnapshot _snapshot;
+    private readonly bool _seedDemoData;
 
-    public JsonAdminRepository(IWebHostEnvironment environment)
+    public JsonAdminRepository(IWebHostEnvironment environment, Microsoft.Extensions.Options.IOptions<DatabaseOptions>? options = null)
     {
+        _seedDemoData = environment.IsDevelopment() && options?.Value.SeedDemoData == true;
         var dataDirectory = RepositorySupport.ResolveDataDirectory(environment);
         _dataPath = Path.Combine(dataDirectory, "admin-store.json");
         _serializerOptions.Converters.Add(new JsonStringEnumConverter());
@@ -213,7 +212,7 @@ public sealed class JsonAdminRepository : IAdminRepository
         }
     }
 
-    public PasswordResetResult? UpdatePasswordByUsername(string username, string plainPassword, string hashMethod)
+    public PasswordResetResult? UpdatePasswordByUsername(string username, string plainPassword, string hashMethod, bool verifyExistingPassword = false)
     {
         lock (_sync)
         {
@@ -225,8 +224,13 @@ public sealed class JsonAdminRepository : IAdminRepository
             }
 
             var method = PasswordHashService.NormalizeInteractiveMethod(hashMethod);
+            if (verifyExistingPassword)
+            {
+                if (!user.Active || !PasswordHashService.VerifyPassword(plainPassword, user.PasswordHash, user.HashMethod)) return null;
+            }
+            else PasswordHashService.ValidateNewPassword(plainPassword);
             user.HashMethod = method;
-            user.PasswordHash = PasswordHashService.HashPassword(plainPassword.Trim(), method);
+            user.PasswordHash = PasswordHashService.HashPassword(plainPassword, method);
             user.FailedAttempts = 0;
             user.LockedUntilUtc = null;
             SaveSnapshot();
@@ -236,7 +240,7 @@ public sealed class JsonAdminRepository : IAdminRepository
                 UserId = user.Id,
                 Username = user.Username,
                 HashMethod = method,
-                GeneratedPassword = plainPassword.Trim()
+                GeneratedPassword = plainPassword
             };
         }
     }
@@ -330,8 +334,9 @@ public sealed class JsonAdminRepository : IAdminRepository
             }
 
             var method = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
+            PasswordHashService.ValidateNewPassword(input.NewPassword);
             user.HashMethod = method;
-            user.PasswordHash = PasswordHashService.HashPassword(input.NewPassword.Trim(), method);
+            user.PasswordHash = PasswordHashService.HashPassword(input.NewPassword, method);
             user.FailedAttempts = 0;
             user.LockedUntilUtc = null;
             tokenRecord.ConsumedUtc = DateTime.UtcNow;
@@ -700,6 +705,7 @@ public sealed class JsonAdminRepository : IAdminRepository
 
     public UserAccount CreateUser(UserInput input)
     {
+        UserInputValidation.Validate(input);
         lock (_sync)
         {
             if (string.IsNullOrWhiteSpace(input.Password))
@@ -707,6 +713,9 @@ public sealed class JsonAdminRepository : IAdminRepository
                 throw new InvalidOperationException("Debes definir una clave inicial segura al crear un usuario. No se permite usar el documento como clave por defecto.");
             }
 
+            PasswordHashService.ValidateNewPassword(input.Password);
+            if (_snapshot.Users.Any(item => string.Equals(item.Username, input.Username.Trim(), StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("El nombre de usuario ya existe.");
             var user = new UserAccount
             {
                 Id = RepositorySupport.NextId(_snapshot.Users.Select(item => item.Id)),
@@ -719,8 +728,8 @@ public sealed class JsonAdminRepository : IAdminRepository
                 SemesterId = input.SemesterId,
                 Active = input.Active,
                 HashMethod = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod),
-                PasswordHash = PasswordHashService.HashPassword(input.Password.Trim(), PasswordHashService.NormalizeInteractiveMethod(input.HashMethod)),
-                Groups = ResolveGroups(input.GroupIds)
+                PasswordHash = PasswordHashService.HashPassword(input.Password, PasswordHashService.NormalizeInteractiveMethod(input.HashMethod)),
+                Groups = ResolveGroups(input.GroupIds ?? [])
             };
 
             _snapshot.Users.Add(user);
@@ -731,10 +740,15 @@ public sealed class JsonAdminRepository : IAdminRepository
 
     public UserAccount? UpdateUser(int id, UserInput input)
     {
+        UserInputValidation.Validate(input);
         lock (_sync)
         {
             var user = _snapshot.Users.FirstOrDefault(item => item.Id == id);
             if (user is null) return null;
+            if (_snapshot.Users.Any(item => item.Id != id && string.Equals(item.Username, input.Username.Trim(), StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("El nombre de usuario ya existe.");
+            if (!string.IsNullOrWhiteSpace(input.Password)) PasswordHashService.ValidateNewPassword(input.Password);
+            var selectedGroups = input.GroupIds is null ? user.Groups : ResolveGroups(input.GroupIds);
             user.Username = input.Username.Trim();
             user.FirstName = input.FirstName.Trim();
             user.LastName = input.LastName.Trim();
@@ -743,11 +757,11 @@ public sealed class JsonAdminRepository : IAdminRepository
             user.CareerId = input.CareerId;
             user.SemesterId = input.SemesterId;
             user.Active = input.Active;
-            user.HashMethod = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
-            user.Groups = ResolveGroups(input.GroupIds);
+            user.Groups = selectedGroups;
             if (!string.IsNullOrWhiteSpace(input.Password))
             {
-                user.PasswordHash = PasswordHashService.HashPassword(input.Password.Trim(), PasswordHashService.NormalizeInteractiveMethod(input.HashMethod));
+                user.HashMethod = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
+                user.PasswordHash = PasswordHashService.HashPassword(input.Password, PasswordHashService.NormalizeInteractiveMethod(input.HashMethod));
             }
             SaveSnapshot();
             return user;
@@ -766,6 +780,18 @@ public sealed class JsonAdminRepository : IAdminRepository
         }
     }
 
+    public bool DeactivateUser(int id)
+    {
+        lock (_sync)
+        {
+            var user = _snapshot.Users.FirstOrDefault(item => item.Id == id);
+            if (user is null) return false;
+            user.Active = false;
+            SaveSnapshot();
+            return true;
+        }
+    }
+
     public PasswordResetResult? ResetUserPassword(int id, PasswordResetInput input)
     {
         lock (_sync)
@@ -776,10 +802,13 @@ public sealed class JsonAdminRepository : IAdminRepository
             var method = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
             var plainPassword = input.Generate || string.IsNullOrWhiteSpace(input.Password)
                 ? PasswordHashService.GeneratePassword()
-                : input.Password.Trim();
+                : input.Password;
 
+            PasswordHashService.ValidateNewPassword(plainPassword);
             user.HashMethod = method;
             user.PasswordHash = PasswordHashService.HashPassword(plainPassword, method);
+            user.FailedAttempts = 0;
+            user.LockedUntilUtc = null;
             SaveSnapshot();
 
             return new PasswordResetResult
@@ -811,99 +840,9 @@ public sealed class JsonAdminRepository : IAdminRepository
         }
     }
 
-    public async Task<ImportUsersResult> ImportUsersAsync(IFormFile file)
-    {
-        using var stream = file.OpenReadStream();
-        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-        var content = await reader.ReadToEndAsync();
-        var lines = content
-            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
-            .Where(line => !string.IsNullOrWhiteSpace(line))
-            .ToList();
-
-        if (lines.Count == 0)
-        {
-            return new ImportUsersResult { Imported = 0, Updated = 0, Warnings = new List<string> { "El archivo esta vacio." } };
-        }
-
-        var delimiter = RepositorySupport.DetectDelimiter(lines[0]);
-        var warnings = new List<string>();
-        var imported = 0;
-        var updated = 0;
-
-        lock (_sync)
-        {
-            var header = RepositorySupport.SplitLine(lines[0], delimiter);
-            var map = header
-                .Select((value, index) => new { Key = RepositorySupport.NormalizeHeader(value), Index = index })
-                .ToDictionary(item => item.Key, item => item.Index);
-
-            for (var i = 1; i < lines.Count; i++)
-            {
-                var values = RepositorySupport.SplitLine(lines[i], delimiter);
-                if (values.Count == 0) continue;
-
-                var username = RepositorySupport.GetValue(values, map, "username");
-                if (string.IsNullOrWhiteSpace(username))
-                {
-                    warnings.Add($"Fila {i + 1}: username vacio, se omite.");
-                    continue;
-                }
-
-                var firstName = RepositorySupport.GetValue(values, map, "firstname", "nombres", "nombre");
-                var lastName = RepositorySupport.GetValue(values, map, "lastname", "apellidos", "apellido");
-                var email = RepositorySupport.GetValue(values, map, "email", "correo");
-                var documentId = RepositorySupport.GetValue(values, map, "documentid", "documento", "cedula");
-                var careerName = RepositorySupport.GetValue(values, map, "career", "carrera");
-                var semesterName = RepositorySupport.GetValue(values, map, "semester", "semestre", "level");
-                var active = RepositorySupport.ParseBoolean(RepositorySupport.GetValue(values, map, "active", "estado", "status"), true);
-
-                var existing = _snapshot.Users.FirstOrDefault(user => user.Username.Equals(username, StringComparison.OrdinalIgnoreCase));
-                var careerId = EnsureCareer(careerName);
-                var semesterId = EnsureSemester(semesterName);
-
-                if (existing is null)
-                {
-                    _snapshot.Users.Add(new UserAccount
-                    {
-                        Id = RepositorySupport.NextId(_snapshot.Users.Select(item => item.Id)),
-                        Username = username.Trim(),
-                        FirstName = firstName,
-                        LastName = lastName,
-                        Email = email,
-                        DocumentId = documentId,
-                        CareerId = careerId,
-                        SemesterId = semesterId,
-                        Active = active,
-                        HashMethod = "BCRYPT",
-                        PasswordHash = PasswordHashService.HashPassword(PasswordHashService.GeneratePassword(), "BCRYPT"),
-                        FailedAttempts = 0
-                    });
-                    imported++;
-                }
-                else
-                {
-                    existing.FirstName = firstName;
-                    existing.LastName = lastName;
-                    existing.Email = email;
-                    existing.DocumentId = documentId;
-                    existing.CareerId = careerId;
-                    existing.SemesterId = semesterId;
-                    existing.Active = active;
-                    existing.HashMethod = existing.HashMethod ?? "BCRYPT";
-                    if (string.IsNullOrWhiteSpace(existing.PasswordHash))
-                    {
-                        existing.PasswordHash = PasswordHashService.HashPassword(PasswordHashService.GeneratePassword(), existing.HashMethod);
-                    }
-                    updated++;
-                }
-            }
-
-            SaveSnapshot();
-        }
-
-        return new ImportUsersResult { Imported = imported, Updated = updated, Warnings = warnings };
-    }
+    public Task<ImportUsersResult> ImportUsersAsync(IFormFile file, Func<UserAccount?, bool>? authorize = null, bool preview = false)
+        => UserImportService.ImportAsync(file, this, name => { lock (_sync) return EnsureCareer(name); },
+            name => { lock (_sync) return EnsureSemester(name); }, authorize, preview);
 
     private AdminSnapshot LoadSnapshot()
     {
@@ -931,19 +870,22 @@ public sealed class JsonAdminRepository : IAdminRepository
                     }).ToList(),
                     RoomLayoutItems = snapshot.RoomLayoutItems ?? new List<RoomLayoutItem>(),
                     UsageRecords = snapshot.UsageRecords ?? new List<UsageRecord>(),
-                    AuditEntries = snapshot.AuditEntries ?? new List<AuditEntry>()
+                    AuditEntries = snapshot.AuditEntries ?? new List<AuditEntry>(),
+                    PortalPasswordResetTokens = snapshot.PortalPasswordResetTokens
                 };
             }
         }
 
-        var seeded = RepositorySupport.CreateSeedSnapshot();
+        var seeded = _seedDemoData ? RepositorySupport.CreateSeedSnapshot() : RepositorySupport.CreateEmptySnapshot();
         File.WriteAllText(_dataPath, JsonSerializer.Serialize(seeded, _serializerOptions));
         return seeded;
     }
 
     private void SaveSnapshot()
     {
-        File.WriteAllText(_dataPath, JsonSerializer.Serialize(_snapshot, _serializerOptions));
+        var temporaryPath = _dataPath + ".tmp";
+        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(_snapshot, _serializerOptions));
+        File.Move(temporaryPath, _dataPath, overwrite: true);
     }
 
     private static AdminSnapshot Clone(AdminSnapshot snapshot)
@@ -1057,6 +999,8 @@ public sealed class JsonAdminRepository : IAdminRepository
     private List<GroupInfo> ResolveGroups(IEnumerable<int> groupIds)
     {
         var selected = new HashSet<int>(groupIds);
+        if (selected.Except(_snapshot.Groups.Select(group => group.Id)).Any())
+            throw new InvalidOperationException("Uno o mas grupos no existen.");
         return _snapshot.Groups
             .Where(group => selected.Contains(group.Id))
             .Select(group => new GroupInfo { Id = group.Id, Name = group.Name })

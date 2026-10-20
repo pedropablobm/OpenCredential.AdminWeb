@@ -31,8 +31,11 @@ internal static class RepositorySupport
         return configuredDataDirectory;
     }
 
-    public static DashboardResponse BuildDashboard(AdminSnapshot snapshot, int rangeDays, int? careerId, int? semesterId, string? status)
+    private sealed record UsageMetric(DateTime StartUtc, double Hours, int? CareerId, int? SemesterId);
+
+    public static DashboardResponse BuildDashboard(AdminSnapshot snapshot, int rangeDays, int? careerId, int? semesterId, string? status, IReadOnlyList<ReportSessionRow>? sessions = null)
     {
+        rangeDays = Math.Clamp(rangeDays, 1, 366);
         var untilUtc = DateTime.UtcNow;
         var fromUtc = untilUtc.AddDays(-Math.Max(1, rangeDays));
         var computedComputers = snapshot.ComputedComputers.Count > 0
@@ -53,9 +56,16 @@ internal static class RepositorySupport
             .OrderBy(card => card.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var filteredUsage = snapshot.UsageRecords
+        var usersByName = snapshot.Users.ToDictionary(user => user.Username, StringComparer.OrdinalIgnoreCase);
+        var usage = sessions is null
+            ? snapshot.UsageRecords.Select(record => new UsageMetric(record.StartUtc, GetDurationHours(record),
+                filteredUsers.GetValueOrDefault(record.UserId)?.CareerId, filteredUsers.GetValueOrDefault(record.UserId)?.SemesterId))
+            : sessions.Select(record => new UsageMetric(record.LoginStamp < fromUtc ? fromUtc : record.LoginStamp, record.DurationHours,
+                usersByName.GetValueOrDefault(record.Username)?.CareerId, usersByName.GetValueOrDefault(record.Username)?.SemesterId));
+        var filteredUsage = usage
             .Where(record => record.StartUtc >= fromUtc && record.StartUtc <= untilUtc)
-            .Where(record => filteredUsers.ContainsKey(record.UserId))
+            .Where(record => !careerId.HasValue || record.CareerId == careerId)
+            .Where(record => !semesterId.HasValue || record.SemesterId == semesterId)
             .ToList();
 
         return new DashboardResponse
@@ -72,7 +82,7 @@ internal static class RepositorySupport
                 DisconnectedComputers = computedComputers.Count(computer => computer.OperationalStatus == OperationalComputerStatus.Disconnected),
                 OrphanedComputers = computedComputers.Count(computer => computer.OperationalStatus == OperationalComputerStatus.Orphaned),
                 DisabledComputers = computedComputers.Count(computer => computer.OperationalStatus == OperationalComputerStatus.Disabled),
-                HoursInRange = Math.Round(filteredUsage.Sum(GetDurationHours), 1)
+                HoursInRange = Math.Round(filteredUsage.Sum(record => record.Hours), 1)
             },
             EquipmentStatus = new List<ChartPoint>
                 {
@@ -93,8 +103,8 @@ internal static class RepositorySupport
                 {
                     Label = career.Name,
                     Value = Math.Round(filteredUsage
-                        .Where(record => filteredUsers.TryGetValue(record.UserId, out var user) && user.CareerId == career.Id)
-                        .Sum(GetDurationHours), 1)
+                        .Where(record => record.CareerId == career.Id)
+                        .Sum(record => record.Hours), 1)
                 })
                 .Where(point => point.Value > 0)
                 .OrderByDescending(point => point.Value)
@@ -104,8 +114,8 @@ internal static class RepositorySupport
                 {
                     Label = semester.Name,
                     Value = Math.Round(filteredUsage
-                        .Where(record => filteredUsers.TryGetValue(record.UserId, out var user) && user.SemesterId == semester.Id)
-                        .Sum(GetDurationHours), 1)
+                        .Where(record => record.SemesterId == semester.Id)
+                        .Sum(record => record.Hours), 1)
                 })
                 .Where(point => point.Value > 0)
                 .OrderByDescending(point => point.Value)
@@ -119,7 +129,7 @@ internal static class RepositorySupport
                         Label = date.ToString("dd/MM", CultureInfo.InvariantCulture),
                         Hours = Math.Round(filteredUsage
                             .Where(record => record.StartUtc.Date == date)
-                            .Sum(GetDurationHours), 1)
+                            .Sum(record => record.Hours), 1)
                     };
                 })
                 .ToList(),
@@ -390,7 +400,23 @@ internal static class RepositorySupport
 
     public static List<string> SplitLine(string line, char delimiter)
     {
-        return line.Split(delimiter).Select(value => value.Trim()).ToList();
+        var fields = new List<string>();
+        var value = new System.Text.StringBuilder();
+        var quoted = false;
+        for (var index = 0; index < line.Length; index++)
+        {
+            var character = line[index];
+            if (character == '"')
+            {
+                if (quoted && index + 1 < line.Length && line[index + 1] == '"') { value.Append('"'); index++; }
+                else quoted = !quoted;
+            }
+            else if (character == delimiter && !quoted) { fields.Add(value.ToString()); value.Clear(); }
+            else value.Append(character);
+        }
+        if (quoted) throw new InvalidOperationException("Comillas sin cerrar; no se admiten saltos de linea dentro de un campo.");
+        fields.Add(value.ToString());
+        return fields;
     }
 
     public static string NormalizeHeader(string value)
@@ -429,6 +455,14 @@ internal static class RepositorySupport
             _ => defaultValue
         };
     }
+
+    public static AdminSnapshot CreateEmptySnapshot() => new()
+    {
+        Careers = [], Semesters = [], Users = [], Computers = [], Rooms = [], RoomLayoutItems = [], UsageRecords = [], AuditEntries = [],
+        Groups = [new() { Id = 1, Name = "Estudiantes" }, new() { Id = 2, Name = "Docentes" },
+            new() { Id = 3, Name = "Funcionarios" }, new() { Id = 5, Name = "AdminWeb-Coordinador" },
+            new() { Id = 6, Name = "AdminWeb-Operador" }, new() { Id = 7, Name = "AdminWeb-SuperAdmin" }]
+    };
 
     public static AdminSnapshot CreateSeedSnapshot()
     {

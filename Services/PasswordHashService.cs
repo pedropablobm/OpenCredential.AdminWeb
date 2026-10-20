@@ -32,6 +32,12 @@ public static class PasswordHashService
         return "BCRYPT";
     }
 
+    public static void ValidateNewPassword(string password)
+    {
+        if (string.IsNullOrWhiteSpace(password) || password.Length < 12 || Encoding.UTF8.GetByteCount(password) > 72)
+            throw new InvalidOperationException("La clave debe tener al menos 12 caracteres y no superar 72 bytes UTF-8.");
+    }
+
     public static bool IsWeakMethod(string? method)
     {
         return !string.Equals(NormalizeMethod(method), "BCRYPT", StringComparison.OrdinalIgnoreCase);
@@ -178,8 +184,12 @@ public static class PasswordHashService
 
     private static bool FixedTimeEquals(string left, string right)
     {
-        return CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(left),
-            Encoding.UTF8.GetBytes(right));
+        try
+        {
+            var expected = Convert.FromHexString(left);
+            var actual = right.Length == left.Length ? Convert.FromHexString(right) : Convert.FromBase64String(right);
+            return CryptographicOperations.FixedTimeEquals(expected, actual);
+        }
+        catch (FormatException) { return false; }
     }
 }

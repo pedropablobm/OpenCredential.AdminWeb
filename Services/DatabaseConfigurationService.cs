@@ -66,12 +66,12 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
                 RequiresRestart = false
             };
         }
-        catch (Exception exception)
+        catch (Exception)
         {
             return new DatabaseConfigurationResult
             {
                 Success = false,
-                Message = $"No fue posible conectar: {exception.Message}",
+                Message = "No fue posible conectar. Revisa host, puerto, credenciales y validacion TLS.",
                 RequiresRestart = false
             };
         }
@@ -100,7 +100,9 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
 
         var path = GetRuntimeConfigurationPath();
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(runtimeConfiguration, _jsonOptions));
+        var temporaryPath = path + ".tmp";
+        await File.WriteAllTextAsync(temporaryPath, JsonSerializer.Serialize(runtimeConfiguration, _jsonOptions));
+        File.Move(temporaryPath, path, overwrite: true);
 
         return new DatabaseConfigurationResult
         {
@@ -126,12 +128,12 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
                 RequiresRestart = false
             };
         }
-        catch (Exception exception)
+        catch (Exception)
         {
             return new DatabaseConfigurationResult
             {
                 Success = false,
-                Message = $"No fue posible ajustar el esquema: {exception.Message}",
+                Message = "No fue posible ajustar el esquema. Revisa permisos de migracion y duplicados de usuarios.",
                 RequiresRestart = false
             };
         }

@@ -13,7 +13,6 @@ public sealed class SqlAdminRepository : IAdminRepository
 {
     private static readonly TimeSpan HeartbeatFreshThreshold = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan HeartbeatStaleThreshold = TimeSpan.FromMinutes(10);
-    private static readonly TimeZoneInfo LoginSessionTimeZone = ResolveLoginSessionTimeZone();
     private readonly DatabaseOptions _options;
     private readonly DbProviderFactory _factory;
     private readonly bool _isPostgreSql;
@@ -33,7 +32,7 @@ public sealed class SqlAdminRepository : IAdminRepository
         if (_options.AutoInitialize)
         {
             EnsureSchema();
-            SeedIfEmpty();
+            if (_options.SeedDemoData) SeedIfEmpty();
         }
     }
 
@@ -144,7 +143,7 @@ public sealed class SqlAdminRepository : IAdminRepository
         var roomLayoutItems = new List<RoomLayoutItem>();
         if (TableExists(connection, "room_positions"))
         {
-            using var positionCommand = CreateCommand(connection, $"SELECT id, room_id, label, item_type, pos_x, pos_y, item_width, item_height, item_orientation, seat_capacity, computer_id, row_number, column_number FROM {Quote("room_positions")} ORDER BY room_id, pos_y, pos_x, id");
+            using var positionCommand = CreateCommand(connection, $"SELECT id, room_id, label, item_type, pos_x, pos_y, item_width, item_height, item_orientation, seat_capacity, computer_id, {Quote("row_number")}, {Quote("column_number")} FROM {Quote("room_positions")} ORDER BY room_id, pos_y, pos_x, id");
             using var positionReader = positionCommand.ExecuteReader();
             while (positionReader.Read())
             {
@@ -201,7 +200,12 @@ public sealed class SqlAdminRepository : IAdminRepository
 
     public DashboardResponse GetDashboard(int rangeDays, int? careerId, int? semesterId, string? status)
     {
-        return RepositorySupport.BuildDashboard(GetSnapshot(), rangeDays, careerId, semesterId, status);
+        rangeDays = Math.Clamp(rangeDays, 1, 366);
+        var snapshot = GetSnapshot();
+        using var connection = OpenConnection();
+        var until = DateTime.UtcNow;
+        var sessions = LoadReportSessions(connection, until.AddDays(-rangeDays), until, careerId, semesterId, null, null, null, null, null);
+        return RepositorySupport.BuildDashboard(snapshot, rangeDays, careerId, semesterId, status, sessions);
     }
 
     public ReportsResponse GetReports(DateTime fromUtc, DateTime toUtc, int? careerId, int? semesterId, int? groupId, string? username, string? sessionOrigin, string? sessionState, string? operationalStatus)
@@ -340,7 +344,7 @@ public sealed class SqlAdminRepository : IAdminRepository
         return affected == 0 ? null : GetPortalProfile(normalizedUsername);
     }
 
-    public PasswordResetResult? UpdatePasswordByUsername(string username, string plainPassword, string hashMethod)
+    public PasswordResetResult? UpdatePasswordByUsername(string username, string plainPassword, string hashMethod, bool verifyExistingPassword = false)
     {
         var normalizedUsername = username?.Trim();
         if (string.IsNullOrWhiteSpace(normalizedUsername) || string.IsNullOrWhiteSpace(plainPassword))
@@ -358,7 +362,12 @@ public sealed class SqlAdminRepository : IAdminRepository
         var method = PasswordHashService.NormalizeInteractiveMethod(hashMethod);
         using var update = CreateCommand(connection, $"UPDATE {Quote("users")} SET hash_method = @hashMethod, password_hash = @passwordHash, failed_attempts = 0, locked_until = NULL WHERE LOWER(username) = LOWER(@username)");
         AddParameter(update, "@hashMethod", method);
-        AddParameter(update, "@passwordHash", PasswordHashService.HashPassword(plainPassword.Trim(), method));
+        if (verifyExistingPassword)
+        {
+            if (!user.Active || !PasswordHashService.VerifyPassword(plainPassword, user.PasswordHash, user.HashMethod)) return null;
+        }
+        else PasswordHashService.ValidateNewPassword(plainPassword);
+        AddParameter(update, "@passwordHash", PasswordHashService.HashPassword(plainPassword, method));
         AddParameter(update, "@username", normalizedUsername);
         update.ExecuteNonQuery();
 
@@ -367,7 +376,7 @@ public sealed class SqlAdminRepository : IAdminRepository
             UserId = user.Id,
             Username = user.Username,
             HashMethod = method,
-            GeneratedPassword = plainPassword.Trim()
+            GeneratedPassword = plainPassword
         };
     }
 
@@ -428,6 +437,7 @@ public sealed class SqlAdminRepository : IAdminRepository
         var token = PasswordHashService.GenerateOpaqueToken();
         var tokenHash = PasswordHashService.HashOpaqueToken(token);
         var expiresAtUtc = DateTime.UtcNow.AddMinutes(Math.Max(5, tokenLifetimeMinutes));
+        using var transaction = new DatabaseWriteScope(connection);
         using (var deleteExisting = CreateCommand(connection, $"DELETE FROM {Quote("portal_password_reset_tokens")} WHERE (user_id = @userId OR LOWER(username) = LOWER(@username))"))
         {
             AddParameter(deleteExisting, "@userId", (object?)userId ?? DBNull.Value);
@@ -444,6 +454,7 @@ public sealed class SqlAdminRepository : IAdminRepository
         AddParameter(insert, "@createdUtc", DateTime.UtcNow);
         AddParameter(insert, "@expiresUtc", expiresAtUtc);
         insert.ExecuteNonQuery();
+        transaction.Commit();
 
         return new PortalPasswordRecoveryResult
         {
@@ -479,8 +490,10 @@ public sealed class SqlAdminRepository : IAdminRepository
 
         CleanupPortalResetTokens(connection);
 
+        PasswordHashService.ValidateNewPassword(input.NewPassword);
+        using var transaction = new DatabaseWriteScope(connection);
         using var find = CreateCommand(connection,
-            $"SELECT id, user_id, username, expires_utc, consumed_utc FROM {Quote("portal_password_reset_tokens")} WHERE UPPER(reset_token) = UPPER(@token) ORDER BY created_utc DESC");
+            $"SELECT id, user_id, username, expires_utc, consumed_utc FROM {Quote("portal_password_reset_tokens")} WHERE UPPER(reset_token) = UPPER(@token) ORDER BY created_utc DESC FOR UPDATE");
         AddParameter(find, "@token", PasswordHashService.HashOpaqueToken(input.Token.Trim()));
         using var reader = find.ExecuteReader();
         if (!reader.Read())
@@ -502,20 +515,12 @@ public sealed class SqlAdminRepository : IAdminRepository
             return false;
         }
 
-        var user = !string.IsNullOrWhiteSpace(username) ? FindUserByUsername(username) : null;
-        if (user is null && userId.HasValue)
-        {
-            user = GetSnapshot().Users.FirstOrDefault(item => item.Id == userId.Value);
-        }
-
-        if (user is null || !user.Active)
-        {
-            message = "El usuario asociado al token no esta disponible.";
-            return false;
-        }
-
-        var result = UpdatePasswordByUsername(user.Username, input.NewPassword.Trim(), input.HashMethod);
-        if (result is null)
+        using var update = CreateCommand(connection,
+            $"UPDATE {Quote("users")} SET hash_method = 'BCRYPT', password_hash = @hash, failed_attempts = 0, locked_until = NULL WHERE id = @userId AND LOWER(username) = LOWER(@username) AND status = 1");
+        AddParameter(update, "@hash", PasswordHashService.HashPassword(input.NewPassword, "BCRYPT"));
+        AddParameter(update, "@userId", (object?)userId ?? DBNull.Value);
+        AddParameter(update, "@username", username ?? "");
+        if (update.ExecuteNonQuery() != 1)
         {
             message = "No fue posible actualizar la clave.";
             return false;
@@ -525,6 +530,7 @@ public sealed class SqlAdminRepository : IAdminRepository
         AddParameter(consume, "@consumedUtc", DateTime.UtcNow);
         AddParameter(consume, "@id", tokenId);
         consume.ExecuteNonQuery();
+        transaction.Commit();
 
         message = "La clave fue restablecida correctamente.";
         return true;
@@ -548,7 +554,8 @@ public sealed class SqlAdminRepository : IAdminRepository
                 username.Trim(),
                 null,
                 null,
-                null)
+                null,
+                exactUsername: true)
             .Where(item => string.Equals(item.Username, username.Trim(), StringComparison.OrdinalIgnoreCase))
             .Take(Math.Max(1, take))
             .Select(item => new PortalSessionEntry
@@ -608,7 +615,8 @@ public sealed class SqlAdminRepository : IAdminRepository
         string? username,
         string? sessionOrigin,
         string? sessionState,
-        string? operationalStatus)
+        string? operationalStatus,
+        bool exactUsername = false)
     {
         if (!TableExists(connection, "login_sessions"))
         {
@@ -670,7 +678,9 @@ LEFT JOIN {Quote("groups")} g ON g.group_id = ug.group_id"
 
         if (!string.IsNullOrWhiteSpace(username))
         {
-            whereConditions.Add("LOWER(COALESCE(ls.username, '')) LIKE LOWER(@usernameLike)");
+            whereConditions.Add(exactUsername
+                ? "LOWER(COALESCE(ls.username, '')) = LOWER(@usernameLike)"
+                : "LOWER(COALESCE(ls.username, '')) LIKE LOWER(@usernameLike)");
         }
 
         if (!string.IsNullOrWhiteSpace(sessionOrigin))
@@ -737,7 +747,7 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
 
         if (!string.IsNullOrWhiteSpace(username))
         {
-            AddParameter(command, "@usernameLike", $"%{username.Trim()}%");
+            AddParameter(command, "@usernameLike", exactUsername ? username.Trim() : $"%{username.Trim()}%");
         }
 
         if (!string.IsNullOrWhiteSpace(sessionOrigin))
@@ -769,7 +779,9 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             }
 
             var durationReference = logoutStamp ?? heartbeat ?? loginStamp;
-            var durationHours = Math.Max(0, (durationReference - loginStamp).TotalHours);
+            var clippedStart = loginStamp < fromUtc ? fromUtc : loginStamp;
+            var clippedEnd = durationReference > toUtc ? toUtc : durationReference;
+            var durationHours = Math.Max(0, (clippedEnd - clippedStart).TotalHours);
             rows.Add(new ReportSessionRow
             {
                 SessionId = ReadFlexibleInt32(reader, 0) ?? 0,
@@ -1032,6 +1044,7 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             throw new InvalidOperationException($"Cada equipo solo puede estar una vez en el mapa visual. Duplicados detectados: {string.Join(", ", duplicateNames)}.");
         }
 
+        using var transaction = new DatabaseWriteScope(connection);
         using (var updateRoom = CreateCommand(connection, $"UPDATE {Quote("rooms")} SET canvas_width = @canvasWidth, canvas_height = @canvasHeight WHERE id = @id"))
         {
             AddParameter(updateRoom, "@id", roomId);
@@ -1046,14 +1059,13 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             deletePositions.ExecuteNonQuery();
         }
 
-        var nextId = NextId(connection, "room_positions");
         foreach (var item in input.Items.OrderBy(layoutItem => layoutItem.Y).ThenBy(layoutItem => layoutItem.X))
         {
             var rowNumber = Math.Max(1, (int)Math.Floor(Math.Max(0, item.Y) / 40.0) + 1);
             var columnNumber = Math.Max(1, (int)Math.Floor(Math.Max(0, item.X) / 40.0) + 1);
             using var insertPosition = CreateCommand(connection,
-                $"INSERT INTO {Quote("room_positions")} (id, room_id, label, item_type, pos_x, pos_y, item_width, item_height, item_orientation, seat_capacity, computer_id, row_number, column_number) VALUES (@id, @roomId, @label, @itemType, @x, @y, @width, @height, @orientation, @capacity, @computerId, @rowNumber, @columnNumber)");
-            AddParameter(insertPosition, "@id", nextId++);
+                $"INSERT INTO {Quote("room_positions")} (id, room_id, label, item_type, pos_x, pos_y, item_width, item_height, item_orientation, seat_capacity, computer_id, {Quote("row_number")}, {Quote("column_number")}) VALUES (@id, @roomId, @label, @itemType, @x, @y, @width, @height, @orientation, @capacity, @computerId, @rowNumber, @columnNumber)");
+            AddParameter(insertPosition, "@id", NextId(connection, "room_positions"));
             AddParameter(insertPosition, "@roomId", roomId);
             AddParameter(insertPosition, "@label", item.Label.Trim());
             AddParameter(insertPosition, "@itemType", ParseRoomLayoutItemType(item.ItemType).ToString());
@@ -1091,17 +1103,23 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             });
         }
 
+        reader.Close();
+        transaction.Commit();
         return saved;
     }
 
     public UserAccount CreateUser(UserInput input)
     {
+        UserInputValidation.Validate(input);
         using var connection = OpenConnection();
+        using var transaction = new DatabaseWriteScope(connection);
         if (string.IsNullOrWhiteSpace(input.Password))
         {
             throw new InvalidOperationException("Debes definir una clave inicial segura al crear un usuario. No se permite usar el documento como clave por defecto.");
         }
 
+        PasswordHashService.ValidateNewPassword(input.Password);
+        if (FindUserByUsername(input.Username) is not null) throw new InvalidOperationException("El nombre de usuario ya existe.");
         var id = NextId(connection, "users");
         var username = input.Username.Trim();
         using (var command = CreateCommand(connection,
@@ -1118,11 +1136,12 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             AddParameter(command, "@levelId", (object?)input.SemesterId ?? DBNull.Value);
             var method = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
             AddParameter(command, "@hashMethod", method);
-            AddParameter(command, "@passwordHash", PasswordHashService.HashPassword(input.Password.Trim(), method));
+            AddParameter(command, "@passwordHash", PasswordHashService.HashPassword(input.Password, method));
             command.ExecuteNonQuery();
         }
 
-        ReplaceUserGroups(connection, id, null, username, input.GroupIds);
+        ReplaceUserGroups(connection, id, null, username, input.GroupIds ?? []);
+        transaction.Commit();
 
         return new UserAccount
         {
@@ -1136,16 +1155,22 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             SemesterId = input.SemesterId,
             Active = input.Active,
             HashMethod = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod),
-            Groups = LoadGroups(connection).Where(group => input.GroupIds.Contains(group.Id)).OrderBy(group => group.Name, StringComparer.OrdinalIgnoreCase).ToList()
+            Groups = LoadGroups(connection).Where(group => (input.GroupIds ?? []).Contains(group.Id)).OrderBy(group => group.Name, StringComparer.OrdinalIgnoreCase).ToList()
         };
     }
 
     public UserAccount? UpdateUser(int id, UserInput input)
     {
+        UserInputValidation.Validate(input);
         using var connection = OpenConnection();
+        var previous = FindUserByUsername(LoadUsernameByUserId(connection, id) ?? "");
+        if (previous is null) return null;
+        var conflicting = FindUserByUsername(input.Username);
+        if (conflicting is not null && conflicting.Id != id) throw new InvalidOperationException("El nombre de usuario ya existe.");
+        using var transaction = new DatabaseWriteScope(connection);
         var previousUsername = LoadUsernameByUserId(connection, id);
         var sql = string.IsNullOrWhiteSpace(input.Password)
-            ? $"UPDATE {Quote("users")} SET username = @username, first_name = @firstName, last_name = @lastName, document_id = @documentId, email = @email, status = @status, career_id = @careerId, level_id = @levelId, hash_method = @hashMethod WHERE id = @id"
+            ? $"UPDATE {Quote("users")} SET username = @username, first_name = @firstName, last_name = @lastName, document_id = @documentId, email = @email, status = @status, career_id = @careerId, level_id = @levelId WHERE id = @id"
             : $"UPDATE {Quote("users")} SET username = @username, first_name = @firstName, last_name = @lastName, document_id = @documentId, email = @email, status = @status, career_id = @careerId, level_id = @levelId, hash_method = @hashMethod, password_hash = @passwordHash WHERE id = @id";
 
         var parameters = new List<(string Name, object Value)>
@@ -1163,7 +1188,8 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
         };
         if (!string.IsNullOrWhiteSpace(input.Password))
         {
-            parameters.Add(("@passwordHash", PasswordHashService.HashPassword(input.Password.Trim(), PasswordHashService.NormalizeInteractiveMethod(input.HashMethod))));
+            PasswordHashService.ValidateNewPassword(input.Password);
+            parameters.Add(("@passwordHash", PasswordHashService.HashPassword(input.Password, PasswordHashService.NormalizeInteractiveMethod(input.HashMethod))));
         }
 
         using var command = CreateCommand(connection, sql);
@@ -1179,12 +1205,15 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
         }
 
         var username = input.Username.Trim();
-        ReplaceUserGroups(connection, id, previousUsername, username, input.GroupIds);
+        var selectedGroups = input.GroupIds ?? previous.Groups.Select(group => group.Id).ToList();
+        if (input.GroupIds is not null || previousUsername != username)
+            ReplaceUserGroups(connection, id, previousUsername, username, selectedGroups);
         var groups = LoadGroups(connection)
-            .Where(group => input.GroupIds.Contains(group.Id))
+            .Where(group => selectedGroups.Contains(group.Id))
             .OrderBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        transaction.Commit();
         return new UserAccount
         {
             Id = id,
@@ -1196,7 +1225,7 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             CareerId = input.CareerId,
             SemesterId = input.SemesterId,
             Active = input.Active,
-            HashMethod = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod),
+            HashMethod = string.IsNullOrWhiteSpace(input.Password) ? previous.HashMethod : PasswordHashService.NormalizeInteractiveMethod(input.HashMethod),
             Groups = groups
         };
     }
@@ -1204,6 +1233,7 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
     public bool DeleteUser(int id)
     {
         using var connection = OpenConnection();
+        using var transaction = new DatabaseWriteScope(connection);
         var username = LoadUsernameByUserId(connection, id);
         using (var deleteUsage = CreateCommand(connection, $"DELETE FROM {Quote("usage_records")} WHERE user_id = @id"))
         {
@@ -1215,8 +1245,12 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
 
         using var deleteUser = CreateCommand(connection, $"DELETE FROM {Quote("users")} WHERE id = @id");
         AddParameter(deleteUser, "@id", id);
-        return deleteUser.ExecuteNonQuery() > 0;
+        var affected = deleteUser.ExecuteNonQuery();
+        transaction.Commit();
+        return affected > 0;
     }
+
+    public bool DeactivateUser(int id) => ExecuteNonQuery($"UPDATE {Quote("users")} SET status = 0 WHERE id = @id", ("@id", id)) > 0;
 
     public PasswordResetResult? ResetUserPassword(int id, PasswordResetInput input)
     {
@@ -1232,8 +1266,9 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
         var method = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
         var plainPassword = input.Generate || string.IsNullOrWhiteSpace(input.Password)
             ? PasswordHashService.GeneratePassword()
-            : input.Password.Trim();
+            : input.Password;
 
+        PasswordHashService.ValidateNewPassword(plainPassword);
         using var update = CreateCommand(connection, $"UPDATE {Quote("users")} SET hash_method = @hashMethod, password_hash = @passwordHash, failed_attempts = 0, locked_until = NULL WHERE id = @id");
         AddParameter(update, "@id", id);
         AddParameter(update, "@hashMethod", method);
@@ -1258,70 +1293,8 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
         return new UsageRecord { Id = id, UserId = input.UserId, ComputerId = input.ComputerId, StartUtc = input.StartUtc, EndUtc = input.EndUtc };
     }
 
-    public async Task<ImportUsersResult> ImportUsersAsync(IFormFile file)
-    {
-        using var stream = file.OpenReadStream();
-        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-        var content = await reader.ReadToEndAsync();
-        var lines = content
-            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
-            .Where(line => !string.IsNullOrWhiteSpace(line))
-            .ToList();
-
-        if (lines.Count == 0)
-        {
-            return new ImportUsersResult { Imported = 0, Updated = 0, Warnings = new List<string> { "El archivo esta vacio." } };
-        }
-
-        var delimiter = RepositorySupport.DetectDelimiter(lines[0]);
-        var header = RepositorySupport.SplitLine(lines[0], delimiter);
-        var map = header
-            .Select((value, index) => new { Key = RepositorySupport.NormalizeHeader(value), Index = index })
-            .ToDictionary(item => item.Key, item => item.Index);
-
-        var imported = 0;
-        var updated = 0;
-        var warnings = new List<string>();
-
-        foreach (var tuple in lines.Skip(1).Select((line, index) => (line, index)))
-        {
-            var values = RepositorySupport.SplitLine(tuple.line, delimiter);
-            var username = RepositorySupport.GetValue(values, map, "username");
-            if (string.IsNullOrWhiteSpace(username))
-            {
-                warnings.Add($"Fila {tuple.index + 2}: username vacio, se omite.");
-                continue;
-            }
-
-            var user = new UserInput
-            {
-                Username = username.Trim(),
-                FirstName = RepositorySupport.GetValue(values, map, "firstname", "nombres", "nombre"),
-                LastName = RepositorySupport.GetValue(values, map, "lastname", "apellidos", "apellido"),
-                Email = RepositorySupport.GetValue(values, map, "email", "correo"),
-                DocumentId = RepositorySupport.GetValue(values, map, "documentid", "documento", "cedula"),
-                CareerId = EnsureCareer(RepositorySupport.GetValue(values, map, "career", "carrera")),
-                SemesterId = EnsureSemester(RepositorySupport.GetValue(values, map, "semester", "semestre", "level")),
-                Active = RepositorySupport.ParseBoolean(RepositorySupport.GetValue(values, map, "active", "estado", "status"), true),
-                HashMethod = PasswordHashService.NormalizeMethod(RepositorySupport.GetValue(values, map, "hashmethod", "hash_method", "algoritmo")),
-                Password = RepositorySupport.GetValue(values, map, "password", "clave", "contrasena")
-            };
-
-            var existingId = FindUserIdByUsername(user.Username);
-            if (existingId.HasValue)
-            {
-                UpdateUser(existingId.Value, user);
-                updated++;
-            }
-            else
-            {
-                CreateUser(user);
-                imported++;
-            }
-        }
-
-        return new ImportUsersResult { Imported = imported, Updated = updated, Warnings = warnings };
-    }
+    public Task<ImportUsersResult> ImportUsersAsync(IFormFile file, Func<UserAccount?, bool>? authorize = null, bool preview = false)
+        => UserImportService.ImportAsync(file, this, EnsureCareer, EnsureSemester, authorize, preview);
 
     private void EnsureSchema()
     {
@@ -1384,7 +1357,7 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             var rowNumber = Math.Max(1, (int)Math.Floor(Math.Max(0, item.Y) / 40.0) + 1);
             var columnNumber = Math.Max(1, (int)Math.Floor(Math.Max(0, item.X) / 40.0) + 1);
             ExecuteNonQuery(
-                $"INSERT INTO {Quote("room_positions")} (id, room_id, label, item_type, pos_x, pos_y, item_width, item_height, computer_id, row_number, column_number) VALUES (@id, @roomId, @label, @itemType, @x, @y, @width, @height, @computerId, @rowNumber, @columnNumber)",
+                $"INSERT INTO {Quote("room_positions")} (id, room_id, label, item_type, pos_x, pos_y, item_width, item_height, computer_id, {Quote("row_number")}, {Quote("column_number")}) VALUES (@id, @roomId, @label, @itemType, @x, @y, @width, @height, @computerId, @rowNumber, @columnNumber)",
                 ("@id", item.Id), ("@roomId", item.RoomId), ("@label", item.Label), ("@itemType", item.ItemType.ToString()), ("@x", item.X), ("@y", item.Y), ("@width", item.Width), ("@height", item.Height), ("@computerId", (object?)item.ComputerId ?? DBNull.Value), ("@rowNumber", rowNumber), ("@columnNumber", columnNumber));
         }
 
@@ -1435,8 +1408,20 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
 
     private int NextId(DbConnection connection, string table)
     {
-        using var command = CreateCommand(connection, $"SELECT COALESCE(MAX(id), 0) + 1 FROM {Quote(table)}");
-        return Convert.ToInt32(command.ExecuteScalar());
+        var sequenceTable = Quote("admin_id_sequences");
+        // Read the baseline separately: INSERT ... SELECT can take InnoDB gap locks
+        // on the user table and deadlock concurrent user creation.
+        using var baseline = CreateCommand(connection, $"SELECT COALESCE(MAX(id), 0) + 1 FROM {Quote(table)}");
+        var initial = Convert.ToInt64(baseline.ExecuteScalar());
+        using var command = CreateCommand(connection, _isPostgreSql
+            ? $"INSERT INTO {sequenceTable} (table_name, next_id) VALUES (@table, @initial) ON CONFLICT (table_name) DO UPDATE SET next_id = GREATEST({sequenceTable}.next_id + 1, EXCLUDED.next_id) RETURNING next_id"
+            : $"INSERT INTO {sequenceTable} (table_name, next_id) VALUES (@table, LAST_INSERT_ID(@initial)) ON DUPLICATE KEY UPDATE next_id = LAST_INSERT_ID(GREATEST(next_id + 1, @initial))");
+        AddParameter(command, "@table", table);
+        AddParameter(command, "@initial", initial);
+        if (_isPostgreSql) return Convert.ToInt32(command.ExecuteScalar());
+        command.ExecuteNonQuery();
+        using var result = CreateCommand(connection, "SELECT LAST_INSERT_ID()");
+        return Convert.ToInt32(result.ExecuteScalar());
     }
 
     private int ExecuteNonQuery(string sql, params (string Name, object Value)[] parameters)
@@ -1455,13 +1440,21 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
     {
         var connection = _factory.CreateConnection() ?? throw new InvalidOperationException("No fue posible crear la conexion.");
         connection.ConnectionString = _options.ConnectionString;
-        connection.Open();
+        try
+        {
+            connection.Open();
+            using var timezone = connection.CreateCommand();
+            timezone.CommandText = _isPostgreSql ? "SET TIME ZONE 'UTC'" : "SET time_zone = '+00:00'";
+            timezone.ExecuteNonQuery();
+        }
+        catch { connection.Dispose(); throw; }
         return connection;
     }
 
     private DbCommand CreateCommand(DbConnection connection, string sql)
     {
         var command = connection.CreateCommand();
+        DatabaseWriteScope.Enlist(connection, command);
         command.CommandText = sql;
         command.CommandType = CommandType.Text;
         return command;
@@ -2236,31 +2229,9 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
         {
             DateTimeKind.Utc => value,
             DateTimeKind.Local => value.ToUniversalTime(),
-            _ => TimeZoneInfo.ConvertTimeToUtc(value, LoginSessionTimeZone)
+            // Desktop writes UTC into TIMESTAMP/DATETIME columns without an offset.
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
         };
-    }
-
-    private static TimeZoneInfo ResolveLoginSessionTimeZone()
-    {
-        var candidates = new[]
-        {
-            "America/Bogota",
-            "SA Pacific Standard Time"
-        };
-
-        foreach (var candidate in candidates)
-        {
-            try
-            {
-                return TimeZoneInfo.FindSystemTimeZoneById(candidate);
-            }
-            catch
-            {
-                // Prueba siguiente identificador compatible con el sistema actual.
-            }
-        }
-
-        return TimeZoneInfo.Local;
     }
 
     private static ComputerStatus MapOperationalToLegacyStatus(OperationalComputerStatus status)
@@ -2292,6 +2263,9 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
 
     private void ReplaceUserGroups(DbConnection connection, int userId, string? previousUsername, string currentUsername, IEnumerable<int> groupIds)
     {
+        var selected = groupIds.Distinct().ToList();
+        var available = LoadGroups(connection).Select(group => group.Id).ToHashSet();
+        if (selected.Any(id => !available.Contains(id))) throw new InvalidOperationException("Uno o mas grupos no existen.");
         if (!TableExists(connection, "user_groups"))
         {
             return;
@@ -2318,7 +2292,7 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             delete.ExecuteNonQuery();
         }
 
-        foreach (var groupId in groupIds.Where(groupId => groupId > 0).Distinct())
+        foreach (var groupId in selected)
         {
             var columns = new List<string>();
             var values = new List<string>();

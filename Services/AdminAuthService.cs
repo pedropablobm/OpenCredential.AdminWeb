@@ -8,18 +8,20 @@ public interface IAdminAuthService
     bool IsEnabled { get; }
     AdminIdentity? ValidateCredentials(string username, string password);
     AdminIdentity GetDefaultIdentity();
+    string? GetSessionVersion(string username, bool repositoryUser);
 }
 
 public sealed class AdminAuthService : IAdminAuthService
 {
     private readonly AdminAuthOptions _options;
-    private readonly IAdminRepository _repository;
+    private readonly IServiceProvider _services;
+    private IAdminRepository Repository => _services.GetRequiredService<IAdminRepository>();
     private readonly IHostEnvironment _environment;
 
-    public AdminAuthService(IOptions<AdminAuthOptions> options, IAdminRepository repository, IHostEnvironment environment)
+    public AdminAuthService(IOptions<AdminAuthOptions> options, IServiceProvider services, IHostEnvironment environment)
     {
         _options = options.Value;
-        _repository = repository;
+        _services = services;
         _environment = environment;
     }
 
@@ -47,6 +49,18 @@ public sealed class AdminAuthService : IAdminAuthService
     public AdminIdentity GetDefaultIdentity()
     {
         return new AdminIdentity(string.IsNullOrWhiteSpace(_options.Username) ? "admin" : _options.Username, _options.Role);
+    }
+
+    public string? GetSessionVersion(string username, bool repositoryUser)
+    {
+        if (!repositoryUser)
+        {
+            var account = GetAccounts().FirstOrDefault(item => string.Equals(item.Username.Trim(), username, StringComparison.OrdinalIgnoreCase));
+            return account is null ? null : SessionSecurity.Hash(System.Text.Json.JsonSerializer.Serialize(account));
+        }
+        var user = Repository.FindUserByUsername(username);
+        var role = user?.Active == true ? ResolveRoleFromGroups(user.Groups.Select(group => group.Name).ToList()) : null;
+        return role is not null ? SessionSecurity.Hash(SessionSecurity.Fingerprint(user!) + ":" + role) : null;
     }
 
     private IEnumerable<AdminAccountOptions> GetAccounts()
@@ -103,7 +117,7 @@ public sealed class AdminAuthService : IAdminAuthService
 
         try
         {
-            var user = _repository.FindUserByUsername(username);
+            var user = Repository.FindUserByUsername(username);
             if (user is null || !user.Active || string.IsNullOrWhiteSpace(user.PasswordHash))
             {
                 return null;
@@ -116,15 +130,15 @@ public sealed class AdminAuthService : IAdminAuthService
 
             if (!PasswordHashService.VerifyPassword(password, user.PasswordHash, user.HashMethod))
             {
-                _repository.RegisterFailedSignIn(user.Username, _options.MaxFailedAttempts, _options.LockoutMinutes);
+                Repository.RegisterFailedSignIn(user.Username, _options.MaxFailedAttempts, _options.LockoutMinutes);
                 return null;
             }
 
-            _repository.ResetFailedSignIn(user.Username);
+            Repository.ResetFailedSignIn(user.Username);
 
-            if (PasswordHashService.IsWeakMethod(user.HashMethod))
+            if (PasswordHashService.IsWeakMethod(user.HashMethod) && System.Text.Encoding.UTF8.GetByteCount(password) <= 72)
             {
-                _repository.UpdatePasswordByUsername(user.Username, password, "BCRYPT");
+                Repository.UpdatePasswordByUsername(user.Username, password, "BCRYPT", verifyExistingPassword: true);
             }
 
             var groups = user.Groups
@@ -134,7 +148,7 @@ public sealed class AdminAuthService : IAdminAuthService
                 .ToList();
 
             var role = ResolveRoleFromGroups(groups);
-            return role is null ? null : new AdminIdentity(user.Username, role, groups);
+            return role is null ? null : new AdminIdentity(user.Username, role, groups, repositoryUser: true);
         }
         catch
         {

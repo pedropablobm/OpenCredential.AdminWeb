@@ -18,8 +18,7 @@ Licencia: BSD 3-Clause. Consulta el archivo `LICENSE`.
 ## Ejecucion local
 
 ```powershell
-$env:DOTNET_CLI_HOME='C:\Github\pgina-mysql8\.dotnet-home'
-dotnet run --project C:\Github\pgina-mysql8\OpenCredential.AdminWeb\OpenCredential.AdminWeb.csproj
+dotnet run --project .\OpenCredential.AdminWeb.csproj
 ```
 
 ## Modos de persistencia
@@ -181,6 +180,50 @@ docker run -d \
 ```
 
 La aplicacion puede iniciar en modo `Json` y luego configurarse desde la interfaz para conectarse a una base externa PostgreSQL o MySQL.
+
+**Actualizacion de integridad y seguridad:** no se crean cuentas demo por defecto. Define una cuenta administrativa por secretos del despliegue. `Database__SeedDemoData=true` solo esta permitido expresamente en Development. Los datos JSON y las claves de cookies deben permanecer en un volumen privado, nunca en una imagen o un commit.
+
+Las solicitudes HTTP remotas requieren HTTPS. El puerto HTTP de Docker por si solo no ofrece TLS: configura un reverse proxy HTTPS y su IP exacta mediante `ADMINWEB_TRUSTED_PROXY` (`ForwardedHeaders__TrustedProxies__0`). No confies en cualquier proxy ni publiques directamente PostgreSQL. `/health` comprueba el proceso; `/health/ready` comprueba acceso al repositorio.
+
+## Correcciones coordinadas y pruebas
+
+- Editar o importar sin clave conserva el algoritmo y hash existentes. Omitir `groupIds` conserva grupos; `[]` los vacia expresamente.
+- Claves nuevas: al menos 12 caracteres y hasta 72 bytes UTF-8; no se eliminan sus espacios. Los hashes legados HEX y Base64 siguen verificandose.
+- La importacion tiene previsualizacion y confirmacion, limite de 2 MiB / 10000 filas, validacion por fila y soporte de comillas CSV sin saltos de linea internos. Las filas rechazadas se informan y no detienen las demas. Los nuevos usuarios requieren clave inicial; no se generan claves desconocidas para ellos.
+- Los coordinadores no pueden asignar grupos administrativos ni modificar cuentas privilegiadas/configuradas. Operadores y viewers no reciben la lista de usuarios; solo SuperAdmin recibe auditoria.
+- Las cookies se revocan al cambiar clave, estado, membresias o rol administrativo efectivo. La accion normal en la tabla de usuarios es **Desactivar**, que conserva historial; la API de eliminacion sigue siendo destructiva.
+- Las peticiones de escritura a `/api` requieren la cabecera `X-OpenCredential-Request: 1`, incluida en ambas interfaces. Los clientes externos deben actualizarse.
+- Persistencia JSON: contrato privado de hashes/tokens y reemplazo atomico del archivo. Los hashes perdidos previamente no se pueden reconstruir: restablece las claves afectadas.
+- SQL: IDs atomicos mediante `admin_id_sequences`, transacciones para usuarios/grupos/mapas/tokens, migraciones compatibles con MySQL 8 y PostgreSQL. PostgreSQL agrega un indice unico sobre `LOWER(username)`: los duplicados historicos requieren revision previa, no se borran automaticamente.
+- Desktop y AdminWeb comparten timestamps **UTC**. Dashboard e informes SQL calculan horas desde `login_sessions`, no desde registros manuales. Revisar historicos antiguos almacenados en hora local antes de actualizar.
+
+Pruebas locales (solo generan datos sinteticos en temporales y un servidor HTTP de loopback):
+
+```powershell
+dotnet run --project .\Tests\RegressionTests.csproj
+node --test .\Tests\frontend.test.cjs
+dotnet build .\OpenCredential.AdminWeb.csproj -c Release
+```
+
+Las regresiones SQL opcionales aceptan `--postgres-port PUERTO` y `--mysql-port PUERTO` despues de `--`. Solo usar instancias **desechables** de localhost: crean bases nuevas para comprobar concurrencia, rollback, tokens e informes. No usar bases de produccion.
+
+`Tests/container-smoke.sh` comprueba login, lectura autenticada y PDF dentro de un contenedor Linux desechable. Requiere una cuenta `container-test` configurada con una clave efimera en `AdminAuth__Accounts__0__Password`; no usar una cuenta institucional. El script no forma parte de la imagen publicada.
+
+Pruebas adicionales de transporte, sin acceso a red externa ni cambios en certificados del anfitrion:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Tests\Test-Transport.ps1
+```
+
+El contenedor usa una CA efimera y servidores locales HTTPS/SMTP. Comprueba certificados validos/invalidos y entrega STARTTLS, pero no certifica una CA institucional ni un servidor de correo real. Las pruebas HTTP tambien verifican que los encabezados de proxy no configurado no evadan HTTPS y que un proxy confiable emita cookies Secure y registre la IP correcta.
+
+## Recuperacion de claves por correo
+
+Configura en secretos/variables `RecoveryDelivery__Enabled`, `RecoveryDelivery__Host`, `RecoveryDelivery__Port`, `RecoveryDelivery__Sender`, `RecoveryDelivery__Username` y `RecoveryDelivery__Password`. En Compose corresponden a las variables `RECOVERY_SMTP_*` de `.env.example`. Se usa SMTP con STARTTLS (normalmente puerto 587); no se omite validacion de certificados.
+
+Cuando no hay SMTP configurado, la recuperacion devuelve 503 e indica contactar al administrador: no simula un envio exitoso. Con SMTP, la respuesta no confirma si la cuenta existe y nunca expone el token. Solo Development permite revelar un token si se habilita expresamente `AdminAuth__PortalRevealRecoveryTokenInResponse`.
+
+Antes de desplegar: respaldar base y volumen de datos, probar TLS/SMTP institucional y validar el login real de Windows en una VM. La paginacion SQL de todos los listados y las pruebas de carga siguen pendientes; el endpoint de snapshot conserva colecciones completas por compatibilidad.
 
 ### Configurar base externa desde la interfaz
 

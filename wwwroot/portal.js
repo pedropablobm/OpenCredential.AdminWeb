@@ -8,9 +8,9 @@ const portalState = {
 
 async function portalFetchJson(url, options) {
     const response = await fetch(url, {
-        headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        ...options
+        ...options,
+        headers: { "Content-Type": "application/json", ...options?.headers, "X-OpenCredential-Request": "1" }
     });
 
     if (response.status === 401) {
@@ -264,6 +264,7 @@ function bindPortal() {
     document.getElementById("portalLogoutBtn").addEventListener("click", async () => {
         await fetch("/api/portal/auth/logout", {
             method: "POST",
+            headers: { "X-OpenCredential-Request": "1" },
             credentials: "same-origin"
         });
         applyPortalSession(null);

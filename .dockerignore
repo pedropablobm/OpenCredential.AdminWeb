@@ -9,3 +9,9 @@ App_Data/*
 *.log
 .dotnet-home/
 artifacts/
+.env
+.env.*
+!.env.example
+keys/
+Tests/
+.git/

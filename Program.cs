@@ -16,6 +16,8 @@ using OpenCredential.AdminWeb;
 using OpenCredential.AdminWeb.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 3 * 1024 * 1024);
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options => options.MultipartBodyLengthLimit = 2 * 1024 * 1024);
 
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
@@ -25,6 +27,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 builder.Services.Configure<DatabaseOptions>(builder.Configuration.GetSection("Database"));
 builder.Services.Configure<AdminAuthOptions>(builder.Configuration.GetSection("AdminAuth"));
+builder.Services.Configure<RecoveryDeliveryOptions>(builder.Configuration.GetSection("RecoveryDelivery"));
 var adminAuthOptions = builder.Configuration.GetSection("AdminAuth").Get<AdminAuthOptions>() ?? new AdminAuthOptions();
 if (!adminAuthOptions.Enabled && !builder.Environment.IsDevelopment())
 {
@@ -38,6 +41,8 @@ var trustedProxyAddresses = (builder.Configuration.GetSection("ForwardedHeaders:
 var dataDirectory = RepositorySupport.ResolveDataDirectory(builder.Environment);
 builder.Configuration.AddJsonFile(Path.Combine(dataDirectory, DatabaseConfigurationService.RuntimeConfigurationFileName), optional: true, reloadOnChange: false);
 var databaseOptions = builder.Configuration.GetSection("Database").Get<DatabaseOptions>() ?? new DatabaseOptions();
+if (databaseOptions.SeedDemoData && !builder.Environment.IsDevelopment())
+    throw new InvalidOperationException("Database:SeedDemoData is allowed only in Development.");
 if (databaseOptions.Mode.Equals("sql", StringComparison.OrdinalIgnoreCase))
 {
     builder.Services.AddSingleton<IAdminRepository, SqlAdminRepository>();
@@ -48,6 +53,8 @@ builder.Services.AddSingleton<IAdminRepository, JsonAdminRepository>();
 }
 builder.Services.AddSingleton<IAdminAuthService, AdminAuthService>();
 builder.Services.AddSingleton<IPortalAuthService, PortalAuthService>();
+builder.Services.AddSingleton<UserManagementPolicy>();
+builder.Services.AddSingleton<RecoveryDeliveryService>();
 builder.Services.AddSingleton<IDatabaseConfigurationService, DatabaseConfigurationService>();
 builder.Services
     .AddDataProtection()
@@ -71,6 +78,7 @@ builder.Services
         options.ExpireTimeSpan = TimeSpan.FromHours(Math.Max(1, adminAuthOptions.SessionHours));
         options.Events = new CookieAuthenticationEvents
         {
+            OnValidatePrincipal = context => SessionSecurity.ValidateAsync(context, portal: false),
             OnRedirectToLogin = context =>
             {
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -93,6 +101,7 @@ builder.Services
         options.ExpireTimeSpan = TimeSpan.FromHours(Math.Max(1, adminAuthOptions.PortalSessionHours));
         options.Events = new CookieAuthenticationEvents
         {
+            OnValidatePrincipal = context => SessionSecurity.ValidateAsync(context, portal: true),
             OnRedirectToLogin = context =>
             {
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -169,6 +178,41 @@ app.Use(async (context, next) =>
     await next();
 });
 app.UseRateLimiter();
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["Referrer-Policy"] = "same-origin";
+    context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+    if (context.Request.Path.StartsWithSegments("/api"))
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        if (!HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method) &&
+            context.Request.Headers["X-OpenCredential-Request"] != "1")
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return;
+        }
+    }
+    try { await next(); }
+    catch (BadHttpRequestException exception) when (!context.Response.HasStarted)
+    {
+        await Results.Problem(title: "La solicitud no es valida o supera el limite permitido.", statusCode: exception.StatusCode).ExecuteAsync(context);
+    }
+    catch (InvalidDataException) when (!context.Response.HasStarted)
+    {
+        await Results.Problem(title: "El archivo no es valido o supera el limite de 2 MiB.", statusCode: 400).ExecuteAsync(context);
+    }
+    catch (InvalidOperationException exception) when (!context.Response.HasStarted)
+    {
+        app.Logger.LogWarning("Operacion rechazada ({ExceptionType}).", exception.GetType().Name);
+        await Results.Problem(title: exception.Message, statusCode: 400).ExecuteAsync(context);
+    }
+    catch (Exception exception) when (!context.Response.HasStarted)
+    {
+        app.Logger.LogError(exception, "Error procesando la solicitud.");
+        await Results.Problem(title: "No se pudo completar la operacion. Consulta los registros del servidor.", statusCode: 500).ExecuteAsync(context);
+    }
+});
 app.UseCookiePolicy();
 app.UseAuthentication();
 app.UseAuthorization();
@@ -197,7 +241,9 @@ static bool IsLoopbackHost(string? host)
 
 static bool IsLocalRequest(HttpRequest request)
 {
-    return IsLoopbackHost(request.Host.Host);
+    var address = request.HttpContext.Connection.RemoteIpAddress;
+    if (address?.IsIPv4MappedToIPv6 == true) address = address.MapToIPv4();
+    return IsLoopbackHost(request.Host.Host) && address is not null && IPAddress.IsLoopback(address);
 }
 
 static void ApplyCookieSecurity(HttpContext context, CookieOptions cookieOptions)
@@ -252,6 +298,8 @@ static void Audit(HttpContext context, IAdminRepository repository, string actio
     catch
     {
         // La auditoria no debe bloquear una operacion administrativa.
+        context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("AdminAudit")
+            .LogWarning("No fue posible persistir un evento de auditoria administrativa.");
     }
 }
 
@@ -265,6 +313,8 @@ static void TryAudit(HttpContext context, string actor, string action, string en
     catch
     {
         // Permite recuperar configuraciones aunque la base configurada este caida.
+        context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("AdminAudit")
+            .LogWarning("Auditoria temporalmente no disponible; se conserva el acceso de recuperacion.");
     }
 }
 
@@ -305,7 +355,9 @@ app.MapPost("/api/auth/login", async (AdminLoginInput input, HttpContext context
     var claims = new List<Claim>
     {
         new(ClaimTypes.Name, adminIdentity.Username),
-        new(ClaimTypes.Role, adminIdentity.Role)
+        new(ClaimTypes.Role, adminIdentity.Role),
+        new(SessionSecurity.SourceClaim, adminIdentity.RepositoryUser ? "repository" : "configured"),
+        new(SessionSecurity.VersionClaim, authService.GetSessionVersion(adminIdentity.Username, adminIdentity.RepositoryUser) ?? "")
     };
     claims.AddRange(adminIdentity.Groups.Select(group => new Claim(ClaimTypes.GroupSid, group)));
 
@@ -373,7 +425,7 @@ app.MapGet("/api/auth/me", (HttpContext context, IAdminAuthService authService) 
     return Results.Unauthorized();
 });
 
-app.MapPost("/api/portal/auth/login", async (PortalLoginInput input, HttpContext context, IPortalAuthService portalAuthService, IOptions<AdminAuthOptions> authOptionsAccessor) =>
+app.MapPost("/api/portal/auth/login", async (PortalLoginInput input, HttpContext context, IPortalAuthService portalAuthService, IAdminRepository repository, IOptions<AdminAuthOptions> authOptionsAccessor) =>
 {
     var portalIdentity = portalAuthService.ValidateCredentials(input.Username, input.Password);
     if (portalIdentity is null)
@@ -385,7 +437,8 @@ app.MapPost("/api/portal/auth/login", async (PortalLoginInput input, HttpContext
     var authOptions = authOptionsAccessor.Value;
     var claims = new List<Claim>
     {
-        new(ClaimTypes.Name, portalIdentity.Username)
+        new(ClaimTypes.Name, portalIdentity.Username),
+        new(SessionSecurity.VersionClaim, SessionSecurity.Fingerprint(repository.FindUserByUsername(portalIdentity.Username)!))
     };
     claims.AddRange(portalIdentity.Groups.Select(group => new Claim(ClaimTypes.GroupSid, group)));
 
@@ -451,22 +504,29 @@ app.MapGet("/api/portal/auth/me", async (HttpContext context, IAdminRepository r
     });
 });
 
-app.MapPost("/api/portal/auth/recover", (PortalPasswordRecoveryInput input, HttpContext context, IAdminRepository repository, IOptions<AdminAuthOptions> authOptionsAccessor) =>
+app.MapPost("/api/portal/auth/recover", async (PortalPasswordRecoveryInput input, HttpContext context, IAdminRepository repository, RecoveryDeliveryService delivery, IOptions<AdminAuthOptions> authOptionsAccessor) =>
 {
     var authOptions = authOptionsAccessor.Value;
+    var revealForTesting = builder.Environment.IsDevelopment() && authOptions.PortalRevealRecoveryTokenInResponse;
+    if (!revealForTesting && !delivery.IsConfigured)
+        return Results.Problem(title: "La recuperacion por correo no esta habilitada. Contacta al administrador.", statusCode: 503);
     var result = repository.RecoverPortalPassword(input, authOptions.PortalRecoveryTokenLifetimeMinutes);
-    var response = builder.Environment.IsDevelopment() && authOptions.PortalRevealRecoveryTokenInResponse
+    if (!revealForTesting && result.Success && result.ResetToken is not null)
+    {
+        try { await delivery.SendAsync(input.Email.Trim(), result.ResetToken, result.ExpiresAtUtc); }
+        catch (Exception)
+        {
+            app.Logger.LogWarning("No se pudo entregar el correo de recuperacion; revisa el servicio SMTP.");
+            return Results.Problem(title: "No se pudo enviar el correo de recuperacion. Intentalo mas tarde.", statusCode: 503);
+        }
+    }
+    var response = revealForTesting
         ? result
         : new PortalPasswordRecoveryResult
         {
-            Success = result.Success,
-            Message = result.Success
-                ? "Se genero un token temporal de recuperacion. Entregalo por el canal institucional definido para completar el cambio de clave."
-                : result.Message,
-            ExpiresAtUtc = result.ExpiresAtUtc,
-            DeliveryHint = result.Success
-                ? "En produccion el token no se expone en pantalla. Debe entregarse por un canal seguro o integrarse con correo institucional."
-                : result.DeliveryHint
+            Success = true,
+            Message = "Si los datos corresponden a una cuenta habilitada, recibiras un codigo en tu correo institucional.",
+            DeliveryHint = "Revisa tu bandeja de entrada y correo no deseado."
         };
     TryAudit(
         context,
@@ -500,11 +560,26 @@ app.MapPost("/api/portal/auth/reset", (PortalPasswordResetWithTokenInput input, 
 var protectedApi = app.MapGroup("/api").RequireAuthorization();
 var portalApi = app.MapGroup("/api/portal").RequireAuthorization("PortalAuthenticated");
 
-protectedApi.MapGet("/summary", (IAdminRepository repository) =>
+protectedApi.AddEndpointFilter(async (invocation, next) =>
+{
+    var context = invocation.HttpContext;
+    if (context.Request.Path.StartsWithSegments("/api/users") && !HttpMethods.IsGet(context.Request.Method))
+    {
+        var repository = context.RequestServices.GetRequiredService<IAdminRepository>();
+        var policy = context.RequestServices.GetRequiredService<UserManagementPolicy>();
+        var input = invocation.Arguments.OfType<UserInput>().FirstOrDefault();
+        var target = int.TryParse(context.Request.RouteValues["id"]?.ToString(), out var id)
+            ? repository.GetSnapshot().Users.FirstOrDefault(user => user.Id == id) : null;
+        if (!policy.CanManage(context.User, target, input, repository.GetGroups())) return Results.Forbid();
+    }
+    return await next(invocation);
+});
+
+protectedApi.MapGet("/summary", (HttpContext context, IAdminRepository repository, UserManagementPolicy policy) =>
 {
     try
     {
-        return Results.Ok(repository.GetSnapshot());
+        return Results.Ok(policy.FilterSnapshot(context.User, repository.GetSnapshot()));
     }
     catch (Exception exception)
     {
@@ -637,7 +712,7 @@ protectedApi.MapPut("/configuration/database", async (DatabaseConfigurationInput
     return Results.Ok(result);
 }).RequireAuthorization("CanManageSettings");
 
-protectedApi.MapPost("/import/users", async (HttpRequest request, HttpContext context, IAdminRepository repository) =>
+protectedApi.MapPost("/import/users", async (HttpRequest request, HttpContext context, IAdminRepository repository, UserManagementPolicy policy, bool? preview) =>
 {
     if (!request.HasFormContentType)
     {
@@ -652,8 +727,8 @@ protectedApi.MapPost("/import/users", async (HttpRequest request, HttpContext co
         return Results.BadRequest(new { message = "No se recibio ningun archivo." });
     }
 
-    var result = await repository.ImportUsersAsync(file);
-    Audit(context, repository, "ImportUsers", "Users", file.FileName, $"Importacion masiva. Importados: {result.Imported}. Actualizados: {result.Updated}.");
+    var result = await repository.ImportUsersAsync(file, user => policy.CanManage(context.User, user), preview ?? false);
+    if (!result.Preview) Audit(context, repository, "ImportUsers", "Users", file.FileName, $"Importacion masiva. Importados: {result.Imported}. Actualizados: {result.Updated}.");
     return Results.Ok(result);
 }).RequireAuthorization("CanManageUsers");
 
@@ -822,6 +897,12 @@ protectedApi.MapDelete("/users/{id:int}", (int id, HttpContext context, IAdminRe
 
     return Results.NotFound();
 }).RequireAuthorization("CanManageUsers");
+protectedApi.MapPost("/users/{id:int}/deactivate", (int id, HttpContext context, IAdminRepository repository) =>
+{
+    if (!repository.DeactivateUser(id)) return Results.NotFound();
+    Audit(context, repository, "DeactivateUser", "User", id.ToString(), "Cuenta desactivada conservando su historial.");
+    return Results.NoContent();
+}).RequireAuthorization("CanManageUsers");
 protectedApi.MapPost("/users/{id:int}/password", (int id, PasswordResetInput input, HttpContext context, IAdminRepository repository) =>
 {
     if (repository.ResetUserPassword(id, input) is { } result)
@@ -916,5 +997,10 @@ portalApi.MapGet("/me/sessions", (HttpContext context, IAdminRepository reposito
 });
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", utc = DateTime.UtcNow }));
+app.MapGet("/health/ready", (HttpContext context) =>
+{
+    try { context.RequestServices.GetRequiredService<IAdminRepository>().GetGroups(); return Results.Ok(new { status = "ready" }); }
+    catch (Exception) { return Results.StatusCode(503); }
+});
 
 app.Run();

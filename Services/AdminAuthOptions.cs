@@ -47,8 +47,9 @@ public sealed class AdminAccountOptions
 
 public sealed class AdminIdentity
 {
-    public AdminIdentity(string username, string role, IEnumerable<string>? groups = null)
+    public AdminIdentity(string username, string role, IEnumerable<string>? groups = null, bool repositoryUser = false)
     {
+        RepositoryUser = repositoryUser;
         Username = username;
         Role = AdminRoles.Normalize(role);
         Groups = groups?
@@ -60,6 +61,7 @@ public sealed class AdminIdentity
     }
 
     public string Username { get; }
+    public bool RepositoryUser { get; }
     public string Role { get; }
     public IReadOnlyList<string> Groups { get; }
 }

@@ -14,6 +14,7 @@ public sealed class AdminSnapshot
     public required List<RoomLayoutItem> RoomLayoutItems { get; init; }
     public required List<UsageRecord> UsageRecords { get; init; }
     public required List<AuditEntry> AuditEntries { get; init; }
+    [JsonIgnore]
     public List<PortalPasswordResetTokenRecord> PortalPasswordResetTokens { get; init; } = [];
 }
 
@@ -302,6 +303,7 @@ public sealed class ComputerStatusCard
 
 public sealed class ImportUsersResult
 {
+    public bool Preview { get; init; }
     public int Imported { get; init; }
     public int Updated { get; init; }
     public required List<string> Warnings { get; init; }
@@ -370,7 +372,8 @@ public sealed class UserInput
     public bool Active { get; init; }
     public string HashMethod { get; init; } = "BCRYPT";
     public string? Password { get; init; }
-    public List<int> GroupIds { get; init; } = [];
+    // null preserves existing memberships; [] explicitly removes them.
+    public List<int>? GroupIds { get; init; }
 }
 
 public sealed class UsageRecordInput

@@ -13,7 +13,7 @@ public interface IAdminRepository
     void ResetFailedSignIn(string username);
     PortalProfile? GetPortalProfile(string username);
     PortalProfile? UpdatePortalProfile(string username, PortalProfileUpdateInput input);
-    PasswordResetResult? UpdatePasswordByUsername(string username, string plainPassword, string hashMethod);
+    PasswordResetResult? UpdatePasswordByUsername(string username, string plainPassword, string hashMethod, bool verifyExistingPassword = false);
     PortalPasswordRecoveryResult RecoverPortalPassword(PortalPasswordRecoveryInput input, int tokenLifetimeMinutes);
     bool ResetPortalPasswordWithToken(PortalPasswordResetWithTokenInput input, out string message);
     List<PortalSessionEntry> GetPortalSessions(string username, int take);
@@ -35,7 +35,8 @@ public interface IAdminRepository
     UserAccount CreateUser(UserInput input);
     UserAccount? UpdateUser(int id, UserInput input);
     bool DeleteUser(int id);
+    bool DeactivateUser(int id);
     PasswordResetResult? ResetUserPassword(int id, PasswordResetInput input);
     UsageRecord CreateUsageRecord(UsageRecordInput input);
-    Task<ImportUsersResult> ImportUsersAsync(IFormFile file);
+    Task<ImportUsersResult> ImportUsersAsync(IFormFile file, Func<UserAccount?, bool>? authorize = null, bool preview = false);
 }

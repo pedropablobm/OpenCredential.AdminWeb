@@ -6,10 +6,65 @@ internal static class DatabaseSchemaManager
 {
     public static void ApplySchema(DbConnection connection, bool isPostgreSql)
     {
-        foreach (var sql in GetSchemaStatements(isPostgreSql))
+        var quote = isPostgreSql ? "\"" : "`";
+        using (var sequence = connection.CreateCommand())
         {
+            sequence.CommandText = $"CREATE TABLE IF NOT EXISTS {quote}admin_id_sequences{quote} (table_name VARCHAR(100) PRIMARY KEY, next_id BIGINT NOT NULL)";
+            sequence.ExecuteNonQuery();
+        }
+        foreach (var statement in GetSchemaStatements(isPostgreSql))
+        {
+            var sql = statement;
+            // MySQL 8 does not support ADD COLUMN IF NOT EXISTS. Check metadata instead.
+            var alteration = System.Text.RegularExpressions.Regex.Match(sql,
+                "ALTER TABLE [\"`](?<table>[^\"`]+)[\"`] ADD COLUMN IF NOT EXISTS [\"`](?<column>[^\"`]+)[\"`]");
+            if (alteration.Success)
+            {
+                var table = alteration.Groups["table"].Value;
+                var column = alteration.Groups["column"].Value;
+                using var check = connection.CreateCommand();
+                check.CommandText = isPostgreSql
+                    ? "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = @table AND column_name = @column"
+                    : "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = @table AND column_name = @column";
+                var tableParameter = check.CreateParameter(); tableParameter.ParameterName = "@table"; tableParameter.Value = table; check.Parameters.Add(tableParameter);
+                var columnParameter = check.CreateParameter(); columnParameter.ParameterName = "@column"; columnParameter.Value = column; check.Parameters.Add(columnParameter);
+                if (Convert.ToInt32(check.ExecuteScalar()) > 0) continue;
+                if (table == "login_sessions")
+                {
+                    check.Parameters.Remove(columnParameter);
+                    check.CommandText = isPostgreSql
+                        ? "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = @table"
+                        : "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = @table";
+                    if (Convert.ToInt32(check.ExecuteScalar()) == 0) continue;
+                }
+                sql = sql.Replace("ADD COLUMN IF NOT EXISTS", "ADD COLUMN");
+            }
             using var command = connection.CreateCommand();
             command.CommandText = sql;
+            command.ExecuteNonQuery();
+        }
+        foreach (var sql in new[]
+        {
+            $"CREATE TABLE IF NOT EXISTS {quote}groups{quote} (group_id BIGINT PRIMARY KEY, group_name VARCHAR(128) NOT NULL UNIQUE)",
+            $"CREATE TABLE IF NOT EXISTS {quote}user_groups{quote} (user_id INT NOT NULL, group_id BIGINT NOT NULL, PRIMARY KEY (user_id, group_id))"
+        })
+        {
+            using var command = connection.CreateCommand(); command.CommandText = sql; command.ExecuteNonQuery();
+        }
+        foreach (var group in RepositorySupport.CreateEmptySnapshot().Groups)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = isPostgreSql
+                ? "INSERT INTO \"groups\" (group_id, group_name) VALUES (@id, @name) ON CONFLICT DO NOTHING"
+                : "INSERT IGNORE INTO `groups` (group_id, group_name) VALUES (@id, @name)";
+            var id = command.CreateParameter(); id.ParameterName = "@id"; id.Value = group.Id; command.Parameters.Add(id);
+            var name = command.CreateParameter(); name.ParameterName = "@name"; name.Value = group.Name; command.Parameters.Add(name);
+            command.ExecuteNonQuery();
+        }
+        if (isPostgreSql)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username_ci ON \"users\" (LOWER(username))";
             command.ExecuteNonQuery();
         }
     }

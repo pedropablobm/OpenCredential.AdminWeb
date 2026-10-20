@@ -49,9 +49,9 @@ public sealed class PortalAuthService : IPortalAuthService
 
             _repository.ResetFailedSignIn(user.Username);
 
-            if (PasswordHashService.IsWeakMethod(user.HashMethod))
+            if (PasswordHashService.IsWeakMethod(user.HashMethod) && System.Text.Encoding.UTF8.GetByteCount(password) <= 72)
             {
-                _repository.UpdatePasswordByUsername(user.Username, password, "BCRYPT");
+                _repository.UpdatePasswordByUsername(user.Username, password, "BCRYPT", verifyExistingPassword: true);
             }
 
             var groups = user.Groups
