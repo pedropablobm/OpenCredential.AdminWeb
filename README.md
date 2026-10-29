@@ -144,6 +144,8 @@ La aplicacion quedo preparada para desplegarse en Docker y correr sin cambios so
 
 Para conectar con una base PostgreSQL existente sin crear otro servidor de base de datos, consulta [el despliegue externo](docs/EXTERNAL_POSTGRES_DEPLOY.md). Utiliza un Compose separado, autenticacion obligatoria y un puerto limitado a loopback.
 
+Para anadir un proxy HTTPS aislado en Docker sin modificar Apache, consulta [el proxy LAN](docs/LAN_PROXY.md).
+
 ### Construir imagen
 
 ```bash
