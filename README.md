@@ -146,6 +146,8 @@ Para conectar con una base PostgreSQL existente sin crear otro servidor de base 
 
 Para anadir un proxy HTTPS aislado en Docker sin modificar Apache, consulta [el proxy LAN](docs/LAN_PROXY.md).
 
+`bash scripts/install-lan.sh` puede crear la configuracion privada, solicitar la firma de un certificado HTTPS por SSH y pedir confirmacion antes de desplegar. Conserva los archivos existentes y requiere una CA previamente preparada y confiable. Esta ruta de instalacion aun necesita validacion integral en Linux antes de usarse en produccion.
+
 ### Construir imagen
 
 ```bash
