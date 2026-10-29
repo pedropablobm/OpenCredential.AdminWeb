@@ -63,6 +63,10 @@ internal static class SqlRegression
         var dashboard = repository.GetDashboard(30, null, null, null);
         var reports = repository.GetReports(DateTime.UtcNow.AddDays(-1), DateTime.UtcNow, null, null, null, null, null, null, null);
         Assert(dashboard.Kpis.HoursInRange == reports.Kpis.TotalHours && dashboard.Kpis.HoursInRange == 2, "Dashboard e informes deben usar las mismas sesiones UTC.");
+        await UserPagingRegression.RunAsync(repository);
+        var after = repository.GetDashboard(30, null, null, null);
+        var snapshot = repository.GetSnapshot();
+        Assert(after.Kpis.TotalUsers == snapshot.Users.Count && after.Kpis.ActiveUsers == snapshot.Users.Count(user => user.Active), "Dashboard conserva los totales sin cargar credenciales ni historial manual.");
     }
     private static void Add(DbCommand command, string name, object value)
     {

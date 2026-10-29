@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+    <a class="skip-link" href="#mainContent">Saltar al contenido principal</a>
     <div class="auth-shell" id="authShell">
         <section class="login-card">
             <p class="eyebrow">Acceso administrativo</p>
@@ -16,11 +17,13 @@
                 modular, enfocada y mas facil de recorrer.
             </p>
             <form id="loginForm" class="stack-form">
-                <input type="text" id="loginUsername" placeholder="Usuario administrador" required />
-                <input type="password" id="loginPassword" placeholder="Clave de acceso" required />
+                <label for="loginUsername">Usuario administrador</label>
+                <input type="text" id="loginUsername" name="username" autocomplete="username" spellcheck="false" required />
+                <label for="loginPassword">Clave de acceso</label>
+                <input type="password" id="loginPassword" name="password" autocomplete="current-password" required />
                 <button type="submit" class="btn btn-primary btn-block">Ingresar</button>
             </form>
-            <p class="support-text" id="loginResult"></p>
+            <p class="support-text" id="loginResult" role="status" aria-live="polite"></p>
             <a class="link-button" href="/portal.html">Ir al portal de usuario</a>
         </section>
     </div>
@@ -98,7 +101,7 @@
             </footer>
         </aside>
 
-        <main class="main-shell">
+        <main class="main-shell" id="mainContent" tabindex="-1">
             <header class="topbar">
                 <label class="search-shell" aria-label="Buscar">
                     <span class="search-icon">⌕</span>
@@ -112,6 +115,13 @@
             </header>
 
             <div class="content-shell">
+                <section class="connection-banner" aria-label="Estado de actualizacion de los datos">
+                    <div>
+                        <p id="dataConnectionStatus" role="status" aria-live="polite" data-status="loading">Pendiente de cargar datos</p>
+                        <p class="support-text" id="lastRefreshAt">Sin una actualizacion correcta en esta sesion</p>
+                    </div>
+                    <button type="button" class="btn btn-secondary" id="retryDataBtn">Actualizar datos</button>
+                </section>
                 <section class="module-view is-active" id="overviewView">
                     <div class="hero-card card">
                         <div>
@@ -694,7 +704,7 @@
 
     <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
 
-    <aside class="drawer" id="userDrawer" aria-hidden="true">
+    <aside class="drawer" id="userDrawer" role="dialog" aria-modal="true" aria-labelledby="userDrawerTitle" aria-hidden="true" tabindex="-1" hidden inert>
         <div class="drawer-head">
             <div>
                 <p class="section-label">Usuarios</p>
@@ -776,7 +786,7 @@
         </form>
     </aside>
 
-    <aside class="drawer" id="computerDrawer" aria-hidden="true">
+    <aside class="drawer" id="computerDrawer" role="dialog" aria-modal="true" aria-labelledby="computerDrawerTitle" aria-hidden="true" tabindex="-1" hidden inert>
         <div class="drawer-head">
             <div>
                 <p class="section-label">Equipos</p>
@@ -823,7 +833,7 @@
         </form>
     </aside>
 
-    <aside class="drawer" id="roomDrawer" aria-hidden="true">
+    <aside class="drawer" id="roomDrawer" role="dialog" aria-modal="true" aria-labelledby="roomDrawerTitle" aria-hidden="true" tabindex="-1" hidden inert>
         <div class="drawer-head">
             <div>
                 <p class="section-label">Salas</p>
@@ -862,7 +872,7 @@
         </form>
     </aside>
 
-    <aside class="drawer drawer-wide" id="layoutDrawer" aria-hidden="true">
+    <aside class="drawer drawer-wide" id="layoutDrawer" role="dialog" aria-modal="true" aria-labelledby="layoutDrawerTitle" aria-hidden="true" tabindex="-1" hidden inert>
         <div class="drawer-head">
             <div>
                 <p class="section-label">Mapa visual</p>
@@ -952,7 +962,7 @@
         </form>
     </aside>
 
-    <aside class="drawer" id="careerDrawer" aria-hidden="true">
+    <aside class="drawer" id="careerDrawer" role="dialog" aria-modal="true" aria-labelledby="careerDrawerTitle" aria-hidden="true" tabindex="-1" hidden inert>
         <div class="drawer-head">
             <div>
                 <p class="section-label">Catalogos</p>
@@ -979,7 +989,7 @@
         </form>
     </aside>
 
-    <aside class="drawer" id="semesterDrawer" aria-hidden="true">
+    <aside class="drawer" id="semesterDrawer" role="dialog" aria-modal="true" aria-labelledby="semesterDrawerTitle" aria-hidden="true" tabindex="-1" hidden inert>
         <div class="drawer-head">
             <div>
                 <p class="section-label">Catalogos</p>
@@ -1006,6 +1016,7 @@
         </form>
     </aside>
 
-    <script src="/app.js?v=20260504-1"></script>
+    <div id="appFeedback" class="app-feedback" role="status" aria-live="polite" hidden></div>
+    <script src="/app.js?v=20261023-1"></script>
 </body>
 </html>

@@ -1,0 +1,28 @@
+services:
+  adminweb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: opencredential-adminweb:external-postgres
+    restart: unless-stopped
+    env_file:
+      - path: ./adminweb.production.env
+        required: true
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ADMINWEB_DATA_DIR: /data
+      ADMINWEB_ISOLATED_PREVIEW: "0"
+      AdminAuth__Enabled: "true"
+      Database__Mode: Sql
+      Database__Provider: PostgreSql
+      Database__AutoInitialize: "false"
+      Database__SeedDemoData: "false"
+    ports:
+      - "127.0.0.1:${ADMINWEB_PORT:-18766}:8080"
+    volumes:
+      - adminweb_external_data:/data
+      - ./postgres-ca.crt:/certs/postgres-ca.crt:ro
+
+volumes:
+  adminweb_external_data:

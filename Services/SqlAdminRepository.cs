@@ -9,7 +9,7 @@ using Npgsql;
 
 namespace OpenCredential.AdminWeb.Services;
 
-public sealed class SqlAdminRepository : IAdminRepository
+public sealed partial class SqlAdminRepository : IAdminRepository
 {
     private static readonly TimeSpan HeartbeatFreshThreshold = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan HeartbeatStaleThreshold = TimeSpan.FromMinutes(10);
@@ -37,6 +37,12 @@ public sealed class SqlAdminRepository : IAdminRepository
     }
 
     public AdminSnapshot GetSnapshot()
+        => GetSnapshotCore(includeUsers: true, includeHistory: true, includeAudit: true);
+
+    public AdminSnapshot GetShellSnapshot(bool includeAudit)
+        => GetSnapshotCore(includeUsers: false, includeHistory: false, includeAudit: includeAudit);
+
+    private AdminSnapshot GetSnapshotCore(bool includeUsers, bool includeHistory, bool includeAudit, bool includeCredentials = true)
     {
         using var connection = OpenConnection();
         var latestSessions = LoadLatestLoginSessions(connection);
@@ -73,9 +79,14 @@ public sealed class SqlAdminRepository : IAdminRepository
         }
 
         var users = new List<UserAccount>();
-        using (var command = CreateCommand(connection, $"SELECT id, username, COALESCE(first_name,''), COALESCE(last_name,''), COALESCE(email,''), COALESCE(document_id,''), career_id, level_id, status, COALESCE(hash_method,'NONE'), password_hash FROM {Quote("users")} ORDER BY username"))
-        using (var reader = command.ExecuteReader())
+        if (includeUsers)
         {
+            var publicFields = includeCredentials
+                ? "COALESCE(first_name,''), COALESCE(last_name,''), COALESCE(email,''), COALESCE(document_id,'')"
+                : "'', '', '', ''";
+            var credentialFields = includeCredentials ? "COALESCE(hash_method,'NONE'), password_hash" : "'NONE', NULL";
+            using var command = CreateCommand(connection, $"SELECT id, username, {publicFields}, career_id, level_id, status, {credentialFields} FROM {Quote("users")} ORDER BY username");
+            using var reader = command.ExecuteReader();
             while (reader.Read())
             {
                 users.Add(new UserAccount
@@ -94,9 +105,8 @@ public sealed class SqlAdminRepository : IAdminRepository
                 });
             }
         }
-
         var groups = LoadGroups(connection);
-        ApplyGroupsToUsers(connection, users, groups);
+        if (includeCredentials) ApplyGroupsToUsers(connection, users, groups);
 
         var computers = new List<Computer>();
         using (var command = CreateCommand(connection, $"SELECT id, name, location, inventory_tag, ip_address, status, current_username, last_seen_utc FROM {Quote("computers")} ORDER BY name"))
@@ -167,9 +177,10 @@ public sealed class SqlAdminRepository : IAdminRepository
         }
 
         var usageRecords = new List<UsageRecord>();
-        using (var command = CreateCommand(connection, $"SELECT id, user_id, computer_id, start_utc, end_utc FROM {Quote("usage_records")} ORDER BY start_utc DESC"))
-        using (var reader = command.ExecuteReader())
+        if (includeHistory)
         {
+            using var command = CreateCommand(connection, $"SELECT id, user_id, computer_id, start_utc, end_utc FROM {Quote("usage_records")} ORDER BY start_utc DESC");
+            using var reader = command.ExecuteReader();
             while (reader.Read())
             {
                 usageRecords.Add(new UsageRecord
@@ -182,7 +193,6 @@ public sealed class SqlAdminRepository : IAdminRepository
                 });
             }
         }
-
         return new AdminSnapshot
         {
             Careers = careers,
@@ -194,17 +204,17 @@ public sealed class SqlAdminRepository : IAdminRepository
             Rooms = rooms,
             RoomLayoutItems = roomLayoutItems,
             UsageRecords = usageRecords,
-            AuditEntries = GetAuditEntries(50)
+            AuditEntries = includeAudit ? GetAuditEntries(50) : []
         };
     }
 
     public DashboardResponse GetDashboard(int rangeDays, int? careerId, int? semesterId, string? status)
     {
         rangeDays = Math.Clamp(rangeDays, 1, 366);
-        var snapshot = GetSnapshot();
+        var snapshot = GetSnapshotCore(includeUsers: true, includeHistory: false, includeAudit: false, includeCredentials: false);
         using var connection = OpenConnection();
         var until = DateTime.UtcNow;
-        var sessions = LoadReportSessions(connection, until.AddDays(-rangeDays), until, careerId, semesterId, null, null, null, null, null);
+        var sessions = LoadReportSessions(connection, until.AddDays(-rangeDays), until, careerId, semesterId, null, null, null, null, null, dashboardOnly: true);
         return RepositorySupport.BuildDashboard(snapshot, rangeDays, careerId, semesterId, status, sessions);
     }
 
@@ -616,7 +626,8 @@ public sealed class SqlAdminRepository : IAdminRepository
         string? sessionOrigin,
         string? sessionState,
         string? operationalStatus,
-        bool exactUsername = false)
+        bool exactUsername = false,
+        bool dashboardOnly = false)
     {
         if (!TableExists(connection, "login_sessions"))
         {
@@ -636,8 +647,8 @@ public sealed class SqlAdminRepository : IAdminRepository
             : $"GREATEST(0, TIMESTAMPDIFF(SECOND, {activityReferenceExpression}, CURRENT_TIMESTAMP))";
         var hasRooms = TableExists(connection, "rooms");
         var hasRoomPositions = TableExists(connection, "room_positions");
-        var hasGroups = TableExists(connection, "groups");
-        var hasUserGroups = TableExists(connection, "user_groups");
+        var hasGroups = !dashboardOnly && TableExists(connection, "groups");
+        var hasUserGroups = !dashboardOnly && TableExists(connection, "user_groups");
         var sessionStateExpression = hasSessionState ? "COALESCE(ls.session_state, '')" : "''";
         var sessionEndReasonExpression = hasSessionEndReason ? "COALESCE(ls.session_end_reason, '')" : "''";
         var sessionOriginExpression = hasSessionOrigin ? "COALESCE(ls.session_origin, '')" : "''";
@@ -693,13 +704,17 @@ LEFT JOIN {Quote("groups")} g ON g.group_id = ug.group_id"
             whereConditions.Add($"LOWER({sessionStateExpression}) = LOWER(@sessionState)");
         }
 
+        var firstNameSql = dashboardOnly ? "''" : "COALESCE(u.first_name, '')";
+        var lastNameSql = dashboardOnly ? "''" : "COALESCE(u.last_name, '')";
+        var documentSql = dashboardOnly ? "''" : "COALESCE(u.document_id, '')";
+        var identityGroupSql = dashboardOnly ? "" : "u.first_name, u.last_name, u.document_id,";
         using var command = CreateCommand(connection, $@"
 SELECT
     ls.dbid,
     ls.username,
-    COALESCE(u.first_name, '') AS first_name,
-    COALESCE(u.last_name, '') AS last_name,
-    COALESCE(u.document_id, '') AS document_id,
+    {firstNameSql} AS first_name,
+    {lastNameSql} AS last_name,
+    {documentSql} AS document_id,
     COALESCE(ca.name, '') AS career_name,
     COALESCE(le.name, '') AS semester_name,
     COALESCE(comp.name, ls.machine, '') AS machine_name,
@@ -724,7 +739,7 @@ LEFT JOIN {Quote("computers")} comp ON LOWER(comp.name) = LOWER(ls.machine)
 {groupJoinSql}
 WHERE {string.Join(Environment.NewLine + "  AND ", whereConditions)}
 GROUP BY
-    ls.dbid, ls.username, u.first_name, u.last_name, u.document_id, ca.name, le.name,
+    ls.dbid, ls.username, {identityGroupSql} ca.name, le.name,
     comp.name, ls.machine, {roomNameSql}, comp.inventory_tag, ls.ipaddress, comp.ip_address,
     {sessionStateExpression}, {sessionEndReasonExpression}, {sessionOriginExpression}, ls.loginstamp, ls.logoutstamp, {lastHeartbeatExpression}
 ORDER BY ls.loginstamp DESC, ls.dbid DESC");

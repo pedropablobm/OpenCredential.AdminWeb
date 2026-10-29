@@ -12,3 +12,9 @@ artifacts/
 .env
 .env.*
 !.env.example
+keys/
+.venv/
+__pycache__/
+.pytest_cache/
+adminweb.production.env
+postgres-ca.crt

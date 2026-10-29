@@ -79,6 +79,7 @@ internal static class HttpRegression
             }
             Assert(proxyResponse.StatusCode == HttpStatusCode.PermanentRedirect, "Encabezados de proxy no configurado no deben saltarse HTTPS.");
             Assert((await admin.GetAsync("/api/summary")).StatusCode == HttpStatusCode.Unauthorized, "API anonima debe negar acceso.");
+            Assert((await admin.GetAsync("/api/users")).StatusCode == HttpStatusCode.Unauthorized, "Listado paginado anonimo debe negar acceso.");
             Assert((await admin.PostAsJsonAsync("/api/auth/login", new { username = "SuperAdmin", password })).StatusCode == HttpStatusCode.Forbidden, "POST sin cabecera CSRF debe rechazarse.");
             admin.DefaultRequestHeaders.Add("X-OpenCredential-Request", "1");
             Assert((await admin.PostAsJsonAsync("/api/auth/login", new { username = "SuperAdmin", password })).IsSuccessStatusCode, "Login admin.");
@@ -93,17 +94,25 @@ internal static class HttpRegression
             var created = await admin.PostAsJsonAsync("/api/users", new { username = "http-student", firstName = "Test", lastName = "User", email = "test@example.invalid", documentId = "123", active = true, password, groupIds = new[] { 1 } });
             Assert(created.IsSuccessStatusCode, "Crear usuario HTTP.");
             var userId = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+            var page = await admin.GetFromJsonAsync<JsonElement>("/api/users?page=1&pageSize=1&search=http-student");
+            Assert(page.GetProperty("items").GetArrayLength() == 1 && page.GetProperty("total").GetInt32() == 1, "Listado paginado HTTP.");
+            Assert(!page.ToString().Contains("passwordHash", StringComparison.OrdinalIgnoreCase), "Listado no expone hashes.");
+            Assert((await admin.GetAsync("/api/users?pageSize=101")).StatusCode == HttpStatusCode.BadRequest, "Tamano de pagina limitado.");
+            var compact = await admin.GetFromJsonAsync<JsonElement>("/api/summary?compact=true");
+            Assert(compact.GetProperty("users").GetArrayLength() == 0 && compact.GetProperty("usageRecords").GetArrayLength() == 0, "Resumen compacto mantiene usuarios separados.");
             var privileged = await admin.PostAsJsonAsync("/api/users", new { username = "http-privileged", firstName = "Test", lastName = "Admin", email = "test@example.invalid", documentId = "124", active = true, password, groupIds = new[] { 7 } });
             Assert(privileged.IsSuccessStatusCode, "Crear usuario privilegiado HTTP.");
             var privilegedId = (await privileged.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
             using var coordinator = Client(); coordinator.DefaultRequestHeaders.Add("X-OpenCredential-Request", "1");
             Assert((await coordinator.PostAsJsonAsync("/api/auth/login", new { username = "Coordinator", password })).IsSuccessStatusCode, "Login coordinador.");
+            Assert((await coordinator.GetAsync("/api/users")).IsSuccessStatusCode, "Coordinador puede consultar listado paginado.");
             Assert((await coordinator.PostAsJsonAsync($"/api/users/{privilegedId}/password", new { generate = true })).StatusCode == HttpStatusCode.Forbidden, "Coordinador no puede resetear administrador.");
             Assert((await coordinator.PutAsJsonAsync($"/api/users/{userId}", new { username = "http-student", firstName = "Test", lastName = "User", email = "test@example.invalid", documentId = "123", active = true, groupIds = new[] { 7 } })).StatusCode == HttpStatusCode.Forbidden, "Coordinador no puede asignar SuperAdmin.");
             var summary = await coordinator.GetFromJsonAsync<JsonElement>("/api/summary");
             Assert(summary.GetProperty("auditEntries").GetArrayLength() == 0, "Coordinador no debe recibir auditoria.");
             using var op = Client(); op.DefaultRequestHeaders.Add("X-OpenCredential-Request", "1");
             Assert((await op.PostAsJsonAsync("/api/auth/login", new { username = "Operator", password })).IsSuccessStatusCode, "Login operador.");
+            Assert((await op.GetAsync("/api/users")).StatusCode == HttpStatusCode.Forbidden, "Operador no debe recibir listado paginado de usuarios.");
             summary = await op.GetFromJsonAsync<JsonElement>("/api/summary");
             Assert(summary.GetProperty("users").GetArrayLength() == 0, "Operador no debe recibir datos personales.");
             using var portal = Client(); portal.DefaultRequestHeaders.Add("X-OpenCredential-Request", "1");

@@ -4,6 +4,12 @@ const state = {
     reports: null,
     session: null,
     isLoading: false,
+    reloadRequested: false,
+    sessionEpoch: 0,
+    databaseConfigLoaded: false,
+    usersPage: null,
+    lastRefreshAt: null,
+    dataStale: true,
     refreshHandle: null,
     currentView: "overview",
     currentEquipmentTab: "list",
@@ -21,6 +27,7 @@ const state = {
         reportTopEquipmentTable: 1,
         reportSessionsTable: 1
     },
+    paginationFocus: null,
     filters: {
         users: { query: "", status: "", careerId: "" },
         equipment: { query: "", status: "", location: "" },
@@ -43,6 +50,7 @@ const pageSizeByTable = {
 const autoRefreshIntervalMs = 20000;
 
 async function fetchJson(url, options) {
+    const epoch = state.sessionEpoch;
     const response = await fetch(url, {
         credentials: "same-origin",
         ...options,
@@ -50,7 +58,7 @@ async function fetchJson(url, options) {
     });
 
     if (response.status === 401) {
-        handleUnauthorized();
+        if (epoch === state.sessionEpoch) handleUnauthorized();
         throw new Error("AUTH_REQUIRED");
     }
 
@@ -77,49 +85,94 @@ async function fetchJson(url, options) {
 }
 
 async function loadAll(options = {}) {
+    if (!state.session?.authenticated) return;
     if (state.isLoading) {
+        state.reloadRequested = true;
         return;
     }
 
     const { background = false } = options;
     state.isLoading = true;
+    const epoch = state.sessionEpoch;
+    const usersQuery = buildUsersQuery();
+    updateDataStatus("loading");
 
-    if (!background && state.session?.role === "SuperAdmin") {
+    if (!background && !state.databaseConfigLoaded && state.session?.role === "SuperAdmin") {
         await loadDatabaseConfiguration();
     }
 
     try {
-        try {
-            state.snapshot = await fetchJson("/api/summary");
-        } catch (error) {
-            showDataLoadError(error);
-            state.snapshot = createEmptySnapshot();
-        }
-
-        try {
-            state.dashboard = await fetchJson(`/api/dashboard?${buildDashboardQuery()}`);
-        } catch (error) {
-            showDataLoadError(error);
-            state.dashboard = createEmptyDashboard();
-        }
-
-        try {
-            state.reports = canView("reports") ? await fetchJson(`/api/reports?${buildReportsQuery()}`) : createEmptyReports();
-        } catch (error) {
-            showDataLoadError(error);
-            state.reports = createEmptyReports();
-        }
-
+        const [snapshot, dashboard, reports, usersPage] = await Promise.all([
+            fetchJson("/api/summary?compact=true"),
+            fetchJson(`/api/dashboard?${buildDashboardQuery()}`),
+            canView("reports") && state.currentView === "reports"
+                ? fetchJson(`/api/reports?${buildReportsQuery()}`) : Promise.resolve(state.reports ?? createEmptyReports()),
+            canView("users") ? fetchJson(`/api/users?${usersQuery}`) : Promise.resolve(null)
+        ]);
+        // A late response must never repopulate data after logout or overwrite newer filters.
+        if (epoch !== state.sessionEpoch) return;
+        state.snapshot = snapshot;
+        state.dashboard = dashboard;
+        state.reports = reports;
+        if (usersQuery === buildUsersQuery()) {
+            state.usersPage = usersPage;
+            if (usersPage) state.pagination.usersTable = usersPage.page;
+        } else state.reloadRequested = true;
+        state.lastRefreshAt = new Date();
+        state.dataStale = false;
         populateSelects(state.snapshot);
         renderApp();
+        updateDataStatus("ready");
+    } catch (error) {
+        if (epoch !== state.sessionEpoch) return;
+        // Keep the last successful data, filters and unsaved form values during an outage.
+        state.dataStale = true;
+        if (!state.snapshot) {
+            state.snapshot = createEmptySnapshot();
+            renderApp();
+        }
+        showDataLoadError(error);
     } finally {
         state.isLoading = false;
+        if (state.reloadRequested && state.session?.authenticated) {
+            state.reloadRequested = false;
+            queueMicrotask(() => loadAll({ background: true }));
+        }
     }
 }
 
+function buildUsersQuery() {
+    const filters = state.filters.users;
+    const query = new URLSearchParams({ page: state.pagination.usersTable, pageSize: pageSizeByTable.usersTable });
+    if (filters.query) query.set("search", filters.query);
+    if (filters.status) query.set("status", filters.status);
+    if (filters.careerId) query.set("careerId", filters.careerId);
+    return query.toString();
+}
+
+function updateDataStatus(status) {
+    const host = document.getElementById("dataConnectionStatus");
+    const timestamp = document.getElementById("lastRefreshAt");
+    if (!host) return;
+    host.dataset.status = status;
+    host.textContent = status === "ready" ? "Datos actualizados" : status === "loading"
+        ? "Actualizando datos…" : state.lastRefreshAt
+            ? "Sin actualizar: se conservan los ultimos datos recibidos. Revisa la conexion y reintenta."
+            : "No se han podido cargar datos. Revisa la conexion y reintenta; los valores vacios no indican ausencia de registros.";
+    if (timestamp) timestamp.textContent = state.lastRefreshAt
+        ? `Ultima actualizacion correcta: ${new Intl.DateTimeFormat("es-CO", { dateStyle: "short", timeStyle: "medium" }).format(state.lastRefreshAt)}`
+        : "Sin una actualizacion correcta en esta sesion";
+    const retry = document.getElementById("retryDataBtn");
+    if (retry) retry.disabled = status === "loading";
+}
+
 async function loadDatabaseConfiguration() {
+    const epoch = state.sessionEpoch;
+    const form = document.getElementById("databaseConfigForm");
+    if (form.dataset.dirty === "true") return;
     try {
         const config = await fetchJson("/api/configuration/database");
+        if (epoch !== state.sessionEpoch || form.dataset.dirty === "true") return;
         document.getElementById("dbProvider").value = config.provider || "PostgreSql";
         document.getElementById("dbHost").value = config.host || "";
         document.getElementById("dbPort").value = config.port || (config.provider === "MySql" ? 3306 : 5432);
@@ -138,6 +191,7 @@ async function loadDatabaseConfiguration() {
         document.getElementById("sidebarDatabaseMode").textContent = config.sqlEnabled
             ? `SQL ${config.provider}`
             : "JSON local";
+        state.databaseConfigLoaded = true;
     } catch (error) {
         if (error.message === "FORBIDDEN") {
             document.getElementById("databaseConfigResult").textContent = "Tu rol no permite ver esta configuracion.";
@@ -515,13 +569,12 @@ function renderOverview() {
 
 function renderUsersModule() {
     const snapshot = state.snapshot ?? createEmptySnapshot();
-    const filters = state.filters.users;
-    const users = snapshot.users
-        .filter(user => !filters.query || user.username.toLowerCase().includes(filters.query) || user.documentId.toLowerCase().includes(filters.query) || user.email.toLowerCase().includes(filters.query))
-        .filter(user => !filters.status || (filters.status === "active" ? user.active : !user.active))
-        .filter(user => !filters.careerId || String(user.careerId ?? "") === filters.careerId);
+    const page = state.usersPage;
+    const users = page?.items ?? [];
 
-    document.getElementById("usersSummary").textContent = `${snapshot.users.length} usuarios registrados | ${snapshot.users.filter(user => user.active).length} activos`;
+    document.getElementById("usersSummary").textContent = page
+        ? `${page.registeredUsers} usuarios registrados | ${page.activeUsers} activos | ${page.total} coinciden con los filtros`
+        : "Listado pendiente de carga";
 
     renderPaginatedTable(
         "usersTable",
@@ -544,7 +597,8 @@ function renderUsersModule() {
                 "Desactivar", "users"
             )
         ]),
-        "No hay usuarios para los filtros seleccionados."
+        page ? "No hay usuarios para los filtros seleccionados." : "No hay un listado disponible. Reintenta cuando se restablezca la conexion.",
+        page
     );
 }
 
@@ -1018,6 +1072,7 @@ function setSelectedLayoutItem(id) {
 }
 
 function updateDraftItem(id, changes, rerender = true) {
+    document.getElementById("layoutDrawer").dataset.dirty = "true";
     const item = state.layoutDraft?.items.find(entry => entry.id === id);
     if (!item) {
         return;
@@ -1034,6 +1089,7 @@ function updateDraftItem(id, changes, rerender = true) {
 }
 
 function addLayoutItem(itemType) {
+    document.getElementById("layoutDrawer").dataset.dirty = "true";
     if (!state.layoutDraft) {
         return;
     }
@@ -1069,6 +1125,7 @@ function addLayoutItem(itemType) {
 }
 
 function deleteSelectedLayoutItem() {
+    document.getElementById("layoutDrawer").dataset.dirty = "true";
     if (!state.layoutDraft || !state.selectedRoomPositionId) {
         return;
     }
@@ -1258,6 +1315,7 @@ function setLayoutResult(message) {
 }
 
 function resizeLayoutCanvas() {
+    document.getElementById("layoutDrawer").dataset.dirty = "true";
     if (!state.layoutDraft) {
         return;
     }
@@ -1309,12 +1367,12 @@ function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
 }
 
-function renderPaginatedTable(hostId, headers, rows, emptyMessage = "No hay registros para mostrar.") {
+function renderPaginatedTable(hostId, headers, rows, emptyMessage = "No hay registros para mostrar.", serverPage = null) {
     const host = document.getElementById(hostId);
     const pageSize = pageSizeByTable[hostId] || 8;
-    const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
-    const currentPage = Math.min(state.pagination[hostId] || 1, totalPages);
-    state.pagination[hostId] = currentPage;
+    const totalPages = serverPage?.totalPages ?? Math.max(1, Math.ceil(rows.length / pageSize));
+    const currentPage = serverPage?.page ?? Math.min(state.pagination[hostId] || 1, totalPages);
+    if (!serverPage) state.pagination[hostId] = currentPage;
 
     if (!rows.length) {
         host.innerHTML = `<p class="support-text">${emptyMessage}</p>`;
@@ -1322,12 +1380,18 @@ function renderPaginatedTable(hostId, headers, rows, emptyMessage = "No hay regi
     }
 
     const start = (currentPage - 1) * pageSize;
-    const pageRows = rows.slice(start, start + pageSize);
+    const pageRows = serverPage ? rows : rows.slice(start, start + pageSize);
     host.innerHTML = `
         ${createTable(headers, pageRows)}
-        ${createPagination(hostId, rows.length, currentPage, totalPages, start, pageRows.length)}
+        ${createPagination(hostId, serverPage?.total ?? rows.length, currentPage, totalPages, start, pageRows.length)}
     `;
     bindPagination(hostId);
+    if (state.paginationFocus?.hostId === hostId && !document.querySelector(".drawer.is-open")) {
+        const direction = state.paginationFocus.direction;
+        const target = host.querySelector(`button[data-page="${direction}"]:not(:disabled)`) || host.querySelector("button[data-page]:not(:disabled)");
+        if (target) target.focus();
+        state.paginationFocus = null;
+    }
 }
 
 function createPagination(hostId, totalRows, currentPage, totalPages, start, visibleRows) {
@@ -1348,14 +1412,17 @@ function createPagination(hostId, totalRows, currentPage, totalPages, start, vis
 function bindPagination(hostId) {
     document.querySelectorAll(`[data-table="${hostId}"] button[data-page]`).forEach(button => {
         button.addEventListener("click", () => {
-            state.pagination[hostId] += button.dataset.page === "next" ? 1 : -1;
-            renderApp();
+            state.paginationFocus = { hostId, direction: button.dataset.page };
+            const current = hostId === "usersTable" ? state.usersPage?.page ?? 1 : state.pagination[hostId];
+            state.pagination[hostId] = current + (button.dataset.page === "next" ? 1 : -1);
+            if (hostId === "usersTable") loadAll();
+            else renderApp();
         });
     });
 }
 
 function createTable(headers, rows) {
-    const thead = headers.map(header => `<th>${header}</th>`).join("");
+    const thead = headers.map(header => `<th scope="col">${header}</th>`).join("");
     const tbody = rows.map(columns => `
         <tr>${columns.map(value => `<td>${value}</td>`).join("")}</tr>
     `).join("");
@@ -1622,12 +1689,11 @@ function matchesStatusFilter(computer, filterValue) {
 }
 
 function showDataLoadError(error) {
-    const resultHost = document.getElementById("databaseConfigResult");
-    if (!resultHost || error.message === "AUTH_REQUIRED" || error.message === "FORBIDDEN") {
+    if (error.message === "AUTH_REQUIRED") {
         return;
     }
 
-    resultHost.textContent = `La configuracion esta guardada, pero no fue posible cargar datos desde la base: ${error.message}`;
+    updateDataStatus("stale");
 }
 
 function createEmptySnapshot() {
@@ -1715,6 +1781,17 @@ function updateTopbarDate() {
 }
 
 function applySession(session) {
+    state.sessionEpoch++;
+    if (!session?.authenticated || state.session?.username !== session.username) {
+        state.snapshot = null;
+        state.usersPage = null;
+        state.dashboard = null;
+        state.reports = null;
+        state.lastRefreshAt = null;
+        state.databaseConfigLoaded = false;
+        state.dataStale = true;
+        state.reloadRequested = false;
+    }
     state.session = session;
     const authShell = document.getElementById("authShell");
     const pageShell = document.querySelector(".page-shell");
@@ -1722,6 +1799,9 @@ function applySession(session) {
     document.body.classList.toggle("auth-required", !session?.authenticated);
     authShell.classList.toggle("is-visible", !session?.authenticated);
     pageShell.classList.toggle("is-hidden", !session?.authenticated);
+    pageShell.inert = !session?.authenticated || !!document.querySelector(".drawer.is-open");
+    authShell.hidden = !!session?.authenticated;
+    authShell.inert = !!session?.authenticated;
     updateSessionChrome();
     syncAutoRefresh();
     applyRoleVisibility();
@@ -1777,24 +1857,142 @@ function syncAutoRefresh() {
 }
 
 function handleUnauthorized() {
+    closeDrawers({ force: true, restoreFocus: false });
     applySession(null);
+    document.querySelectorAll('input[type="password"]').forEach(input => { input.value = ""; });
     document.getElementById("loginResult").textContent = "Inicia sesion para continuar.";
+    document.getElementById("loginUsername").focus();
 }
+
+let drawerReturnFocus = null;
 
 function openDrawer(drawerId) {
+    const current = document.querySelector(".drawer.is-open");
+    if (current && !closeDrawers({ restoreFocus: false })) return;
+    drawerReturnFocus = document.activeElement;
     document.getElementById("drawerBackdrop").hidden = false;
     document.querySelectorAll(".drawer").forEach(drawer => {
-        drawer.classList.toggle("is-open", drawer.id === drawerId);
-        drawer.setAttribute("aria-hidden", drawer.id === drawerId ? "false" : "true");
+        const active = drawer.id === drawerId;
+        drawer.hidden = !active;
+        drawer.inert = !active;
+        drawer.classList.toggle("is-open", active);
+        drawer.setAttribute("aria-hidden", String(!active));
+        if (active) {
+            drawer.dataset.dirty = "false";
+            drawer.querySelector(".form-feedback")?.remove();
+        }
     });
+    const drawer = document.getElementById(drawerId);
+    const target = [...drawer.querySelectorAll('input:not([type="hidden"]), select, textarea')].find(isFocusable);
+    (target || drawer).focus();
+    document.querySelector(".page-shell").inert = true;
 }
 
-function closeDrawers() {
+function closeDrawers(options = {}) {
+    const active = document.querySelector(".drawer.is-open");
+    if (!options.force && active?.dataset.dirty === "true" && !window.confirm("Hay cambios sin guardar. ¿Quieres descartarlos y cerrar?")) return false;
+    // Move focus out before hiding its ancestor from assistive technology.
+    document.querySelector(".page-shell").inert = !state.session?.authenticated;
+    if (options.restoreFocus !== false && active) {
+        const target = drawerReturnFocus?.isConnected ? drawerReturnFocus : document.getElementById("mainContent");
+        target.focus();
+    } else if (active?.contains(document.activeElement)) {
+        document.activeElement.blur();
+    }
     document.getElementById("drawerBackdrop").hidden = true;
     document.querySelectorAll(".drawer").forEach(drawer => {
         drawer.classList.remove("is-open");
         drawer.setAttribute("aria-hidden", "true");
+        drawer.hidden = true;
+        drawer.inert = true;
+        drawer.dataset.dirty = "false";
     });
+    return true;
+}
+
+function isFocusable(element) {
+    return !element.disabled && !element.hidden && element.tabIndex >= 0 && element.getClientRects().length > 0;
+}
+
+function bindAccessibility() {
+    document.querySelectorAll("input, select, textarea").forEach(field => {
+        if (!field.name) field.name = field.id;
+        if (!field.autocomplete && !["loginUsername", "loginPassword"].includes(field.id)) field.autocomplete = "off";
+        if (["text", "email", "password"].includes(field.type)) field.spellcheck = false;
+    });
+    document.querySelectorAll(".icon-close").forEach(button => button.setAttribute("aria-label", "Cerrar panel"));
+    document.querySelectorAll('.support-text[id$="Result"]').forEach(host => {
+        host.setAttribute("role", "status");
+        host.setAttribute("aria-live", "polite");
+    });
+    document.querySelectorAll(".drawer").forEach(drawer => {
+        const markDirty = () => { drawer.dataset.dirty = "true"; };
+        drawer.addEventListener("input", markDirty);
+        drawer.addEventListener("change", markDirty);
+    });
+    const configuration = document.getElementById("databaseConfigForm");
+    configuration.addEventListener("input", () => { configuration.dataset.dirty = "true"; });
+    configuration.addEventListener("change", () => { configuration.dataset.dirty = "true"; });
+    document.addEventListener("keydown", event => {
+        const drawer = document.querySelector(".drawer.is-open");
+        if (!drawer || event.defaultPrevented) return;
+        if (event.key === "Escape") {
+            event.preventDefault();
+            closeDrawers();
+        } else if (event.key === "Tab") {
+            const controls = [...drawer.querySelectorAll('button, input:not([type="hidden"]), select, textarea, a[href], [tabindex="0"]')].filter(isFocusable);
+            const first = controls[0];
+            const last = controls.at(-1);
+            if (!first) { event.preventDefault(); drawer.focus(); }
+            else if (event.shiftKey && (document.activeElement === first || !controls.includes(document.activeElement))) {
+                event.preventDefault(); last.focus();
+            } else if (!event.shiftKey && (document.activeElement === last || !controls.includes(document.activeElement))) {
+                event.preventDefault(); first.focus();
+            }
+        }
+    });
+    window.addEventListener("beforeunload", event => {
+        if (document.querySelector('.drawer[data-dirty="true"], #databaseConfigForm[data-dirty="true"]')) {
+            event.preventDefault();
+            event.returnValue = "";
+        }
+    });
+    document.getElementById("retryDataBtn").addEventListener("click", () => loadAll({ background: true }));
+}
+
+function bindSubmit(formId, handler) {
+    const form = document.getElementById(formId);
+    form.addEventListener("submit", async event => {
+        event.preventDefault();
+        if (form.getAttribute("aria-busy") === "true") return;
+        form.setAttribute("aria-busy", "true");
+        form.querySelector(".form-feedback")?.remove();
+        const buttons = [...form.querySelectorAll('button[type="submit"]')].map(button => [button, button.disabled]);
+        buttons.forEach(([button]) => { button.disabled = true; });
+        try { await handler(event); }
+        catch (error) {
+            if (error.message === "AUTH_REQUIRED") return;
+            let feedback = form.querySelector(".form-feedback");
+            if (!feedback) {
+                feedback = document.createElement("p");
+                feedback.className = "form-feedback";
+                feedback.setAttribute("role", "alert");
+                feedback.tabIndex = -1;
+                form.append(feedback);
+            }
+            feedback.textContent = "No se pudo guardar. Tus cambios siguen en el formulario. Revisa la conexion y los datos antes de reintentar.";
+            feedback.focus();
+        } finally {
+            form.removeAttribute("aria-busy");
+            buttons.forEach(([button, disabled]) => { button.disabled = disabled; });
+        }
+    });
+}
+
+function showToast(message) {
+    const host = document.getElementById("appFeedback");
+    host.textContent = message;
+    host.hidden = false;
 }
 
 function resetUserForm() {
@@ -1987,7 +2185,7 @@ function updateGlobalSearchPlaceholder() {
 }
 
 function bindForms() {
-    document.getElementById("loginForm").addEventListener("submit", async event => {
+    bindSubmit("loginForm", async event => {
         event.preventDefault();
         const resultHost = document.getElementById("loginResult");
         resultHost.textContent = "Validando credenciales...";
@@ -2063,7 +2261,7 @@ function bindForms() {
         }
     });
 
-    document.getElementById("databaseConfigForm").addEventListener("submit", async event => {
+    bindSubmit("databaseConfigForm", async event => {
         event.preventDefault();
         const resultHost = document.getElementById("databaseConfigResult");
         resultHost.textContent = "Guardando configuracion...";
@@ -2077,6 +2275,7 @@ function bindForms() {
                 : result.message;
             document.getElementById("dbPassword").placeholder = "Clave guardada. Escribela solo si quieres cambiarla";
             document.getElementById("dbPassword").required = false;
+            document.getElementById("databaseConfigForm").dataset.dirty = "false";
         } catch (error) {
             resultHost.textContent = `No fue posible guardar la configuracion: ${error.message}`;
         }
@@ -2084,6 +2283,7 @@ function bindForms() {
 
     document.getElementById("generatePasswordBtn").addEventListener("click", () => {
         document.getElementById("userPassword").value = generatePassword();
+        document.getElementById("userDrawer").dataset.dirty = "true";
         document.getElementById("passwordActionResult").textContent = "Clave segura generada localmente. Guarda el usuario para aplicarla.";
     });
 
@@ -2100,18 +2300,18 @@ function bindForms() {
             generate: !document.getElementById("userPassword").value
         };
 
-        const result = await fetchJson(`/api/users/${id}/password`, {
-            method: "POST",
-            body: JSON.stringify(payload)
-        });
-
-        document.getElementById("userPassword").value = result.generatedPassword;
-        document.getElementById("passwordActionResult").textContent =
-            `Clave actualizada para ${result.username}. Algoritmo: ${result.hashMethod}. Nueva clave: ${result.generatedPassword}`;
-        await loadAll();
+        try {
+            const result = await fetchJson(`/api/users/${id}/password`, { method: "POST", body: JSON.stringify(payload) });
+            document.getElementById("userPassword").value = result.generatedPassword;
+            document.getElementById("passwordActionResult").textContent =
+                `Clave actualizada para ${result.username}. Algoritmo: ${result.hashMethod}. La clave esta en el campo protegido; no se anuncia en este mensaje.`;
+            await loadAll();
+        } catch (error) {
+            if (error.message !== "AUTH_REQUIRED") document.getElementById("passwordActionResult").textContent = "No se pudo actualizar la clave. Revisa la conexion y reintenta.";
+        }
     });
 
-    document.getElementById("careerForm").addEventListener("submit", async event => {
+    bindSubmit("careerForm", async event => {
         event.preventDefault();
         const id = document.getElementById("careerId").value;
         const payload = {
@@ -2123,11 +2323,11 @@ function bindForms() {
             body: JSON.stringify(payload)
         });
         resetCareerForm();
-        closeDrawers();
+        closeDrawers({ force: true });
         await loadAll();
     });
 
-    document.getElementById("semesterForm").addEventListener("submit", async event => {
+    bindSubmit("semesterForm", async event => {
         event.preventDefault();
         const id = document.getElementById("semesterId").value;
         const payload = {
@@ -2139,11 +2339,11 @@ function bindForms() {
             body: JSON.stringify(payload)
         });
         resetSemesterForm();
-        closeDrawers();
+        closeDrawers({ force: true });
         await loadAll();
     });
 
-    document.getElementById("userForm").addEventListener("submit", async event => {
+    bindSubmit("userForm", async event => {
         event.preventDefault();
         const id = document.getElementById("userId").value;
         const payload = {
@@ -2164,11 +2364,11 @@ function bindForms() {
             body: JSON.stringify(payload)
         });
         resetUserForm();
-        closeDrawers();
+        closeDrawers({ force: true });
         await loadAll();
     });
 
-    document.getElementById("computerForm").addEventListener("submit", async event => {
+    bindSubmit("computerForm", async event => {
         event.preventDefault();
         const id = document.getElementById("computerId").value;
         const payload = {
@@ -2184,11 +2384,11 @@ function bindForms() {
             body: JSON.stringify(payload)
         });
         resetComputerForm();
-        closeDrawers();
+        closeDrawers({ force: true });
         await loadAll();
     });
 
-    document.getElementById("roomForm").addEventListener("submit", async event => {
+    bindSubmit("roomForm", async event => {
         event.preventDefault();
         const id = document.getElementById("roomId").value;
         const payload = {
@@ -2204,11 +2404,11 @@ function bindForms() {
         });
         state.selectedRoomId = room.id;
         resetRoomForm();
-        closeDrawers();
+        closeDrawers({ force: true });
         await loadAll();
     });
 
-    document.getElementById("layoutForm").addEventListener("submit", async event => {
+    bindSubmit("layoutForm", async event => {
         event.preventDefault();
         if (!state.layoutDraft) {
             return;
@@ -2246,14 +2446,14 @@ function bindForms() {
                 body: JSON.stringify(payload)
             });
             resultHost.textContent = "Mapa visual guardado correctamente.";
-            closeDrawers();
+            closeDrawers({ force: true });
             await loadAll();
         } catch (error) {
             resultHost.textContent = `No fue posible guardar el mapa visual: ${error.message}`;
         }
     });
 
-    document.getElementById("importForm").addEventListener("submit", async event => {
+    bindSubmit("importForm", async event => {
         event.preventDefault();
         const fileInput = document.getElementById("userFile");
         if (!fileInput.files.length) {
@@ -2298,17 +2498,17 @@ function bindForms() {
     document.getElementById("userSearch").addEventListener("input", event => {
         state.filters.users.query = event.target.value.trim().toLowerCase();
         state.pagination.usersTable = 1;
-        renderUsersModule();
+        debounceUsersLoad();
     });
     document.getElementById("userStatusFilter").addEventListener("change", event => {
         state.filters.users.status = event.target.value;
         state.pagination.usersTable = 1;
-        renderUsersModule();
+        loadAll({ background: true });
     });
     document.getElementById("userCareerFilter").addEventListener("change", event => {
         state.filters.users.careerId = event.target.value;
         state.pagination.usersTable = 1;
-        renderUsersModule();
+        loadAll({ background: true });
     });
 
     document.getElementById("equipmentSearch").addEventListener("input", event => {
@@ -2350,7 +2550,8 @@ function bindForms() {
         if (state.currentView === "users") {
             state.filters.users.query = value;
             document.getElementById("userSearch").value = event.target.value;
-            renderUsersModule();
+            state.pagination.usersTable = 1;
+            debounceUsersLoad();
         } else if (state.currentView === "equipment") {
             state.filters.equipment.query = value;
             document.getElementById("equipmentSearch").value = event.target.value;
@@ -2375,6 +2576,7 @@ function bindNavigation() {
         button.addEventListener("click", () => {
             state.currentView = button.dataset.view;
             syncViewState();
+            if (state.currentView === "reports") loadAll({ background: true });
         });
     });
 
@@ -2589,6 +2791,7 @@ function escapeHtml(value) {
 }
 
 async function initializeApp() {
+    bindAccessibility();
     bindForms();
     bindNavigation();
     bindLayoutInspector();
@@ -2623,6 +2826,11 @@ function initializeReportFilters() {
 }
 
 let debounceHandle = null;
+let usersDebounceHandle = null;
+function debounceUsersLoad() {
+    clearTimeout(usersDebounceHandle);
+    usersDebounceHandle = setTimeout(() => loadAll({ background: true }), 250);
+}
 function debounceLoadAll() {
     clearTimeout(debounceHandle);
     debounceHandle = setTimeout(() => {

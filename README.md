@@ -142,6 +142,8 @@ Cada evento guarda actor, accion, entidad, resumen, IP remota y fecha UTC.
 
 La aplicacion quedo preparada para desplegarse en Docker y correr sin cambios sobre una VM Linux o contenedor LXC en Proxmox que tenga Docker Engine y Docker Compose.
 
+Para conectar con una base PostgreSQL existente sin crear otro servidor de base de datos, consulta [el despliegue externo](docs/EXTERNAL_POSTGRES_DEPLOY.md). Utiliza un Compose separado, autenticacion obligatoria y un puerto limitado a loopback.
+
 ### Construir imagen
 
 ```bash
@@ -186,6 +188,12 @@ La aplicacion puede iniciar en modo `Json` y luego configurarse desde la interfa
 Las solicitudes HTTP remotas requieren HTTPS. El puerto HTTP de Docker por si solo no ofrece TLS: configura un reverse proxy HTTPS y su IP exacta mediante `ADMINWEB_TRUSTED_PROXY` (`ForwardedHeaders__TrustedProxies__0`). No confies en cualquier proxy ni publiques directamente PostgreSQL. `/health` comprueba el proceso; `/health/ready` comprueba acceso al repositorio.
 
 ## Correcciones coordinadas y pruebas
+
+### Interfaz accesible, resiliencia y usuarios paginados
+
+El panel incorpora etiquetas de login, foco visible, paneles modales operables con teclado, confirmacion de cambios pendientes y errores de guardado sin vaciar formularios. La barra de conexion muestra la ultima carga correcta y conserva los datos anteriores cuando falla la actualizacion. El listado de usuarios ahora pagina y filtra en servidor mediante `GET /api/users`; el resumen compacto evita transferir todos los usuarios e historiales manuales. Los contratos existentes siguen disponibles.
+
+Consulta [la guia de interfaz y paginacion](docs/ADMINWEB_UI_PAGING.md) para pruebas, limites y compatibilidad. Estos cambios no sustituyen la autenticacion directa PostgreSQL/MySQL de Desktop ni habilitan acceso invitado.
 
 - Editar o importar sin clave conserva el algoritmo y hash existentes. Omitir `groupIds` conserva grupos; `[]` los vacia expresamente.
 - Claves nuevas: al menos 12 caracteres y hasta 72 bytes UTF-8; no se eliminan sus espacios. Los hashes legados HEX y Base64 siguen verificandose.

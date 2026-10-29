@@ -5,6 +5,12 @@ namespace OpenCredential.AdminWeb.Services;
 public interface IAdminRepository
 {
     AdminSnapshot GetSnapshot();
+    AdminSnapshot GetShellSnapshot(bool includeAudit) => UserPaging.Compact(GetSnapshot(), includeAudit);
+    Task<UserPage> GetUsersAsync(UserPageQuery query, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(UserPaging.FromSnapshot(GetSnapshot(), query));
+    }
     DashboardResponse GetDashboard(int rangeDays, int? careerId, int? semesterId, string? status);
     ReportsResponse GetReports(DateTime fromUtc, DateTime toUtc, int? careerId, int? semesterId, int? groupId, string? username, string? sessionOrigin, string? sessionState, string? operationalStatus);
     List<GroupInfo> GetGroups();

@@ -15,3 +15,5 @@ artifacts/
 keys/
 Tests/
 .git/
+adminweb.production.env
+postgres-ca.crt

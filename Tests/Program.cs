@@ -30,6 +30,7 @@ Directory.CreateDirectory(root);
 var environment = new TestEnvironment { ContentRootPath = root };
 var failures = 0;
 var count = 0;
+await Test("Politica y ciclo de vida invitado sin acceso real", () => { GuestAccessPolicyRegression.Run(); return Task.CompletedTask; });
 await Test("JSON conserva credenciales tras reinicio", () =>
 {
     var repository = new JsonAdminRepository(environment);
@@ -123,6 +124,7 @@ await Test("Claves con espacios y hashes Base64 conservan compatibilidad", () =>
     Assert(repository.FindUserByUsername("spaces")?.Active == false);
     return Task.CompletedTask;
 });
+await Test("JSON: listado paginado, filtros, cancelacion y contrato compacto", () => UserPagingRegression.RunAsync(new JsonAdminRepository(environment)));
 await Test("HTTP: autenticacion, roles, CSRF y revocacion", () => HttpRegression.RunAsync(root));
 await Test("HTTP: recuperacion administrativa con base caida", () => HttpRegression.RunAsync(root, databaseDown: true));
 await Test("HTTP: proxy confiable, cookie Secure y auditoria de IP", () => HttpRegression.RunAsync(root, trustedProxy: true));

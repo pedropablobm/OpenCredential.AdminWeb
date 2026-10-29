@@ -215,6 +215,25 @@ app.Use(async (context, next) =>
 });
 app.UseCookiePolicy();
 app.UseAuthentication();
+// Explicit, loopback-only development preview. Never enable this on a deployed server.
+if (app.Environment.IsDevelopment() && !adminAuthOptions.Enabled &&
+    string.Equals(Environment.GetEnvironmentVariable("ADMINWEB_ISOLATED_PREVIEW"), "1", StringComparison.Ordinal))
+{
+    app.Use(async (context, next) =>
+    {
+        if (!IsLocalRequest(context.Request))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return;
+        }
+        context.User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim(ClaimTypes.Name, "isolated-preview"),
+            new Claim(ClaimTypes.Role, AdminRoles.SuperAdmin)
+        }, "isolated-preview"));
+        await next();
+    });
+}
 app.UseAuthorization();
 app.UseDefaultFiles();
 app.UseStaticFiles();
@@ -575,17 +594,24 @@ protectedApi.AddEndpointFilter(async (invocation, next) =>
     return await next(invocation);
 });
 
-protectedApi.MapGet("/summary", (HttpContext context, IAdminRepository repository, UserManagementPolicy policy) =>
+protectedApi.MapGet("/summary", (HttpContext context, IAdminRepository repository, UserManagementPolicy policy, bool? compact) =>
 {
     try
     {
-        return Results.Ok(policy.FilterSnapshot(context.User, repository.GetSnapshot()));
+        var snapshot = compact == true ? repository.GetShellSnapshot(context.User.IsInRole(AdminRoles.SuperAdmin)) : repository.GetSnapshot();
+        return Results.Ok(policy.FilterSnapshot(context.User, snapshot));
     }
     catch (Exception exception)
     {
         return DataLoadProblem(exception);
     }
 });
+protectedApi.MapGet("/users", async (IAdminRepository repository, int? page, int? pageSize, string? search, string? status, int? careerId, CancellationToken cancellationToken) =>
+{
+    var query = new UserPageQuery(page ?? 1, pageSize ?? 20, search, status, careerId).Validate();
+    return Results.Ok(await repository.GetUsersAsync(query, cancellationToken));
+}).RequireAuthorization(policy => policy.RequireRole(AdminRoles.SuperAdmin, AdminRoles.Coordinator));
+
 protectedApi.MapGet("/dashboard", (IAdminRepository repository, int? rangeDays, int? careerId, int? semesterId, string? status) =>
 {
     try
