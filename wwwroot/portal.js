@@ -1,12 +1,15 @@
 const portalState = {
     session: null,
+    sessionEpoch: 0,
     profile: null,
     sessions: [],
+    sessionsLoadFailed: false,
     currentView: "profile",
     currentAuthView: "login"
 };
 
 async function portalFetchJson(url, options) {
+    const epoch = portalState.sessionEpoch;
     const response = await fetch(url, {
         credentials: "same-origin",
         ...options,
@@ -14,7 +17,7 @@ async function portalFetchJson(url, options) {
     });
 
     if (response.status === 401) {
-        applyPortalSession(null);
+        if (epoch === portalState.sessionEpoch) applyPortalSession(null);
         throw new Error("AUTH_REQUIRED");
     }
 
@@ -41,6 +44,12 @@ async function portalFetchJson(url, options) {
 }
 
 function applyPortalSession(session) {
+    portalState.sessionEpoch++;
+    if (!session?.authenticated || portalState.session?.username !== session.username) {
+        portalState.profile = null;
+        portalState.sessions = [];
+        portalState.sessionsLoadFailed = false;
+    }
     portalState.session = session;
     const isAuthenticated = !!session?.authenticated;
     document.getElementById("portalAuthShell").classList.toggle("is-visible", !isAuthenticated);
@@ -51,15 +60,19 @@ function applyPortalSession(session) {
 }
 
 async function loadPortalData() {
-    portalState.profile = await portalFetchJson("/api/portal/me");
+    const epoch = portalState.sessionEpoch;
+    const profile = await portalFetchJson("/api/portal/me");
+    if (epoch !== portalState.sessionEpoch) return;
+    portalState.profile = profile;
     try {
-        portalState.sessions = await portalFetchJson("/api/portal/me/sessions?take=25");
+        const sessions = await portalFetchJson("/api/portal/me/sessions?take=25");
+        if (epoch !== portalState.sessionEpoch) return;
+        portalState.sessions = sessions;
+        portalState.sessionsLoadFailed = false;
     } catch (error) {
+        if (error.message === "AUTH_REQUIRED" || epoch !== portalState.sessionEpoch) return;
         portalState.sessions = [];
-        const host = document.getElementById("portalSessionsTable");
-        if (host) {
-            host.innerHTML = `<p class="support-text">No fue posible cargar el historial de accesos: ${escapePortalHtml(error.message)}.</p>`;
-        }
+        portalState.sessionsLoadFailed = true;
     }
     renderPortal();
 }
@@ -94,6 +107,25 @@ function renderPortalProfile() {
 function renderPortalSessions() {
     const host = document.getElementById("portalSessionsTable");
     const sessions = portalState.sessions || [];
+    if (portalState.sessionsLoadFailed) {
+        host.innerHTML = '<p class="support-text" role="status">No fue posible cargar el historial de accesos. Revisa la conexion y vuelve a intentarlo.</p><button type="button" class="btn btn-secondary" id="retryPortalSessionsBtn">Reintentar</button>';
+        document.getElementById("retryPortalSessionsBtn").addEventListener("click", async event => {
+            const epoch = portalState.sessionEpoch;
+            event.currentTarget.disabled = true;
+            host.querySelector('[role="status"]').textContent = "Cargando historial...";
+            try {
+                const result = await portalFetchJson("/api/portal/me/sessions?take=25");
+                if (epoch !== portalState.sessionEpoch || !portalState.session?.authenticated) return;
+                portalState.sessions = result;
+                portalState.sessionsLoadFailed = false;
+            } catch (error) {
+                if (error.message === "AUTH_REQUIRED" || epoch !== portalState.sessionEpoch || !portalState.session?.authenticated) return;
+                portalState.sessionsLoadFailed = true;
+            }
+            renderPortalSessions();
+        });
+        return;
+    }
     if (!sessions.length) {
         host.innerHTML = `<p class="support-text">Todavia no hay accesos registrados para este usuario.</p>`;
         return;

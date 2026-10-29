@@ -8,12 +8,19 @@ const state = {
     sessionEpoch: 0,
     databaseConfigLoaded: false,
     usersPage: null,
+    usersPageQuery: null,
+    usersLoadFailed: false,
+    reportsQuery: null,
+    reportsLoadFailed: false,
     lastRefreshAt: null,
     dataStale: true,
     refreshHandle: null,
     currentView: "overview",
     currentEquipmentTab: "list",
     currentAcademicTab: "careers",
+    currentReportTab: "summary",
+    importReview: null,
+    importRevision: 0,
     selectedRoomId: null,
     selectedRoomPositionId: null,
     layoutDraft: null,
@@ -95,34 +102,51 @@ async function loadAll(options = {}) {
     state.isLoading = true;
     const epoch = state.sessionEpoch;
     const usersQuery = buildUsersQuery();
+    const reportsQuery = buildReportsQuery();
+    const requestReports = canView("reports") && state.currentView === "reports";
+    const requestUsers = canView("users");
     updateDataStatus("loading");
+    updateReportLoadStatus();
 
     if (!background && !state.databaseConfigLoaded && state.session?.role === "SuperAdmin") {
         await loadDatabaseConfiguration();
     }
 
     try {
-        const [snapshot, dashboard, reports, usersPage] = await Promise.all([
+        const [snapshot, dashboard, reports, usersPage] = await Promise.allSettled([
             fetchJson("/api/summary?compact=true"),
             fetchJson(`/api/dashboard?${buildDashboardQuery()}`),
-            canView("reports") && state.currentView === "reports"
-                ? fetchJson(`/api/reports?${buildReportsQuery()}`) : Promise.resolve(state.reports ?? createEmptyReports()),
-            canView("users") ? fetchJson(`/api/users?${usersQuery}`) : Promise.resolve(null)
+            requestReports ? fetchJson(`/api/reports?${reportsQuery}`) : Promise.resolve(null),
+            requestUsers ? fetchJson(`/api/users?${usersQuery}`) : Promise.resolve(null)
         ]);
         // A late response must never repopulate data after logout or overwrite newer filters.
         if (epoch !== state.sessionEpoch) return;
-        state.snapshot = snapshot;
-        state.dashboard = dashboard;
-        state.reports = reports;
-        if (usersQuery === buildUsersQuery()) {
-            state.usersPage = usersPage;
-            if (usersPage) state.pagination.usersTable = usersPage.page;
-        } else state.reloadRequested = true;
+        if (snapshot.status === "rejected") throw snapshot.reason;
+        if (dashboard.status === "rejected") throw dashboard.reason;
+        state.snapshot = snapshot.value;
+        state.dashboard = dashboard.value;
+        if (requestReports) {
+            if (reportsQuery !== buildReportsQuery()) state.reloadRequested = true;
+            else if (reports.status === "fulfilled") {
+                state.reports = reports.value;
+                state.reportsQuery = reportsQuery;
+                state.reportsLoadFailed = false;
+            } else state.reportsLoadFailed = true;
+        }
+        if (requestUsers) {
+            if (usersQuery !== buildUsersQuery()) state.reloadRequested = true;
+            else if (usersPage.status === "fulfilled") {
+                state.usersPage = usersPage.value;
+                if (usersPage.value) state.pagination.usersTable = usersPage.value.page;
+                state.usersPageQuery = buildUsersQuery();
+                state.usersLoadFailed = false;
+            } else state.usersLoadFailed = true;
+        }
         state.lastRefreshAt = new Date();
         state.dataStale = false;
         populateSelects(state.snapshot);
         renderApp();
-        updateDataStatus("ready");
+        updateDataStatus(state.usersLoadFailed || state.reportsLoadFailed ? "partial" : "ready");
     } catch (error) {
         if (epoch !== state.sessionEpoch) return;
         // Keep the last successful data, filters and unsaved form values during an outage.
@@ -134,11 +158,30 @@ async function loadAll(options = {}) {
         showDataLoadError(error);
     } finally {
         state.isLoading = false;
+        updateReportLoadStatus();
         if (state.reloadRequested && state.session?.authenticated) {
             state.reloadRequested = false;
             queueMicrotask(() => loadAll({ background: true }));
         }
     }
+}
+
+function reportDataMatchesFilters() {
+    return !!state.reports && state.reportsQuery === buildReportsQuery();
+}
+
+function updateReportLoadStatus() {
+    const available = reportDataMatchesFilters();
+    const status = document.getElementById("reportsLoadStatus");
+    const results = document.getElementById("reportResults");
+    if (results) results.hidden = !available;
+    if (status) status.textContent = state.reportsLoadFailed
+        ? (available ? "No se pudo actualizar el reporte. Se muestran los ultimos datos para estos filtros; reintenta antes de exportar." : "No se pudo cargar el reporte para estos filtros. Reintenta; no se muestran resultados anteriores.")
+        : (available ? "" : "Reporte pendiente de carga para los filtros seleccionados.");
+    ["exportReportsCsvBtn", "printReportsBtn"].forEach(id => {
+        const button = document.getElementById(id);
+        if (button) button.disabled = !available || state.reportsLoadFailed || state.isLoading;
+    });
 }
 
 function buildUsersQuery() {
@@ -155,13 +198,14 @@ function updateDataStatus(status) {
     const timestamp = document.getElementById("lastRefreshAt");
     if (!host) return;
     host.dataset.status = status;
-    host.textContent = status === "ready" ? "Datos actualizados" : status === "loading"
+    host.textContent = status === "ready" ? "Datos actualizados" : status === "partial"
+        ? "Resumen actualizado; algunas secciones necesitan reintento." : status === "loading"
         ? "Actualizando datos…" : state.lastRefreshAt
             ? "Sin actualizar: se conservan los ultimos datos recibidos. Revisa la conexion y reintenta."
             : "No se han podido cargar datos. Revisa la conexion y reintenta; los valores vacios no indican ausencia de registros.";
     if (timestamp) timestamp.textContent = state.lastRefreshAt
-        ? `Ultima actualizacion correcta: ${new Intl.DateTimeFormat("es-CO", { dateStyle: "short", timeStyle: "medium" }).format(state.lastRefreshAt)}`
-        : "Sin una actualizacion correcta en esta sesion";
+        ? `Ultima actualizacion correcta del resumen: ${new Intl.DateTimeFormat("es-CO", { dateStyle: "short", timeStyle: "medium" }).format(state.lastRefreshAt)}`
+        : "Sin una actualizacion correcta del resumen en esta sesion";
     const retry = document.getElementById("retryDataBtn");
     if (retry) retry.disabled = status === "loading";
 }
@@ -183,8 +227,26 @@ async function loadDatabaseConfiguration() {
             ? "Clave guardada. Escribela solo si quieres cambiarla"
             : "Clave de base de datos";
         document.getElementById("dbPassword").required = !config.passwordConfigured;
-        document.getElementById("dbSslMode").value = config.sslMode || "Disable";
+        const deploymentManaged = config.sqlEnabled && !config.runtimeConfigurationExists;
+        form.dataset.deploymentManaged = String(deploymentManaged);
+        document.getElementById("dbSslMode").value = config.sslMode || "";
+        document.getElementById("dbRootCertificate").value = config.rootCertificate || "";
+        syncDatabaseTlsFields();
         document.getElementById("dbAutoInitialize").checked = config.autoInitialize !== false;
+        const summary = document.getElementById("databaseConfigSummary");
+        if (!config.sqlEnabled) {
+            summary.textContent = "Almacenamiento actual: JSON local.";
+        } else if (!config.connectionDetailsAvailable) {
+            summary.textContent = "Conexion SQL configurada. No fue posible mostrar sus detalles; revisa la configuracion del despliegue.";
+        } else {
+            const source = config.runtimeConfigurationExists ? "Configuracion guardada (puede requerir reinicio)" : "Conexion del despliegue";
+            const tls = config.sslMode || "No disponible";
+            const ca = config.rootCertificateConfigured === true ? " · ruta de CA configurada (sin comprobar)" : "";
+            summary.textContent = `${source}: ${config.provider} · ${config.host || "Servidor no indicado"}:${config.port} · ${config.databaseName || "Base no indicada"} · TLS configurado: ${tls}${ca}.`;
+        }
+        document.getElementById("databaseConfigNotice").textContent = deploymentManaged
+            ? "La conexion activa procede del despliegue. Guardar aqui sustituira esa configuracion al reiniciar; verifica el modo TLS y la CA antes de continuar."
+            : "Probar conexion no guarda cambios. La configuracion guardada se aplica al reiniciar.";
         document.getElementById("databaseConfigResult").textContent = config.sqlEnabled
             ? `Modo actual: SQL (${config.provider}).`
             : "Modo actual: JSON local. Guarda una configuracion SQL y reinicia el contenedor para usar la base externa.";
@@ -240,6 +302,27 @@ function buildReportsQuery() {
     return params.toString();
 }
 
+function updateReportAdvancedFilterCount() {
+    const ids = ["reportSemesterFilter", "reportGroupFilter", "reportUsernameFilter", "reportOriginFilter", "reportSessionStateFilter"];
+    const count = ids.filter(id => (document.getElementById(id)?.value || "").trim()).length;
+    const label = document.getElementById("reportAdvancedFilterCount");
+    if (label) label.textContent = count ? `(${count} ${count === 1 ? "activo" : "activos"})` : "";
+}
+
+function syncReportTabs() {
+    document.querySelectorAll("[data-report-tab]").forEach(button => {
+        const selected = button.dataset.reportTab === state.currentReportTab;
+        button.classList.toggle("is-active", selected);
+        button.setAttribute("aria-selected", String(selected));
+        button.tabIndex = selected ? 0 : -1;
+        const panel = document.getElementById(button.getAttribute("aria-controls"));
+        if (panel) {
+            panel.hidden = !selected;
+            panel.classList.toggle("is-active", selected);
+        }
+    });
+}
+
 function populateSelects(snapshot) {
     fillOptions(document.getElementById("careerFilter"), snapshot.careers, "Todas las carreras");
     fillOptions(document.getElementById("semesterFilter"), snapshot.semesters, "Todos los semestres");
@@ -249,6 +332,7 @@ function populateSelects(snapshot) {
     fillOptions(document.getElementById("reportCareerFilter"), snapshot.careers, "Todas las carreras");
     fillOptions(document.getElementById("reportSemesterFilter"), snapshot.semesters, "Todos los semestres");
     fillOptions(document.getElementById("reportGroupFilter"), snapshot.groups ?? [], "Todos los grupos");
+    updateReportAdvancedFilterCount();
     fillOptions(document.getElementById("roomSelector"), snapshot.rooms, "Selecciona una sala");
     ensureSelectedRoom(snapshot.rooms);
 }
@@ -334,12 +418,15 @@ function renderApp() {
 }
 
 function renderReportsModule() {
+    updateReportLoadStatus();
     const reports = state.reports ?? createEmptyReports();
     renderKpiCards("reportsKpiCards", [
         { label: "Sesiones", value: reports.kpis.sessionCount, note: "Registros en el rango", tone: "neutral" },
         { label: "Horas", value: reports.kpis.totalHours, note: "Uso total acumulado", tone: "success" },
         { label: "Usuarios unicos", value: reports.kpis.uniqueUsers, note: "Personas con actividad", tone: "info" },
-        { label: "Programas activos", value: reports.kpis.activePrograms, note: "Carreras con uso", tone: "info" },
+        { label: "Programas activos", value: reports.kpis.activePrograms, note: "Carreras con uso", tone: "info" }
+    ]);
+    renderKpiCards("reportsExtraKpis", [
         { label: "Salas activas", value: reports.kpis.activeRooms, note: "Salas con actividad", tone: "slate" },
         { label: "Offline recuperadas", value: reports.kpis.offlineRecoveredSessions, note: "Sesiones historicas sincronizadas", tone: "info" },
         { label: "Reemplazadas", value: reports.kpis.supersededSessions, note: "Cerradas por nuevo logon", tone: "warning" },
@@ -456,6 +543,10 @@ function renderReportSessionState(item) {
 }
 
 function exportReportsCsv() {
+    if (!reportDataMatchesFilters() || state.reportsLoadFailed || state.isLoading) {
+        window.alert("Actualiza el reporte antes de exportar.");
+        return;
+    }
     const reports = state.reports ?? createEmptyReports();
     if (!(reports.sessions ?? []).length) {
         window.alert("No hay sesiones para exportar con los filtros actuales.");
@@ -508,6 +599,10 @@ function exportReportsCsv() {
 }
 
 async function exportReportsPdf() {
+    if (!reportDataMatchesFilters() || state.reportsLoadFailed || state.isLoading) {
+        window.alert("Actualiza el reporte antes de exportar.");
+        return;
+    }
     const reports = state.reports ?? createEmptyReports();
     if (!(reports.sessions ?? []).length) {
         window.alert("No hay sesiones para exportar con los filtros actuales.");
@@ -546,12 +641,14 @@ function renderOverview() {
     const operationalComputers = getOperationalComputers(state.snapshot);
     const recoveredOfflineCount = operationalComputers.filter(item => item.hasRecoveredOfflineSession).length;
     renderKpiCards("overviewKpiCards", [
-        { label: "Usuarios activos", value: `${kpis.activeUsers}/${kpis.totalUsers}`, note: "Estado de cuentas registradas", tone: "neutral" },
         { label: "Equipos disponibles", value: kpis.availableComputers, note: "Listos para uso en sala", tone: "success" },
         { label: "Ocupados", value: kpis.occupiedComputers, note: "Sesion activa confirmada", tone: "warning" },
+        { label: "Sesiones por revisar", value: kpis.orphanedComputers, note: "Sin actividad reciente o estado no reconocido", tone: "danger" },
+        { label: "Usuarios activos", value: `${kpis.activeUsers}/${kpis.totalUsers}`, note: "Cuentas registradas", tone: "neutral" }
+    ]);
+    renderKpiCards("overviewExtraKpiCards", [
         { label: "Bloqueados", value: kpis.lockedComputers, note: "Sesion bloqueada con presencia", tone: "info" },
         { label: "Desconectados", value: kpis.disconnectedComputers, note: "Sesion separada del cliente", tone: "slate" },
-        { label: "Huerfanas", value: kpis.orphanedComputers, note: "Requieren revision operativa", tone: "danger" },
         { label: "Offline recuperadas", value: recoveredOfflineCount, note: "Equipos activos sincronizados desde cache", tone: "info" },
         { label: "Deshabilitados", value: kpis.disabledComputers, note: "Fuera de servicio", tone: "danger" }
     ]);
@@ -569,8 +666,14 @@ function renderOverview() {
 
 function renderUsersModule() {
     const snapshot = state.snapshot ?? createEmptySnapshot();
-    const page = state.usersPage;
+    const page = state.usersPageQuery === buildUsersQuery() ? state.usersPage : null;
     const users = page?.items ?? [];
+
+    const status = document.getElementById("usersLoadStatus");
+    status.hidden = !state.usersLoadFailed;
+    status.textContent = state.usersLoadFailed
+        ? (page ? "No se pudo actualizar la lista. Se muestran los ultimos datos para estos filtros; reintenta." : "No se pudo cargar la lista para estos filtros. Reintenta; no se muestran resultados anteriores.")
+        : "";
 
     document.getElementById("usersSummary").textContent = page
         ? `${page.registeredUsers} usuarios registrados | ${page.activeUsers} activos | ${page.total} coinciden con los filtros`
@@ -578,14 +681,13 @@ function renderUsersModule() {
 
     renderPaginatedTable(
         "usersTable",
-        ["Usuario", "Nombre", "Carrera", "Semestre", "Grupos", "Hash", "Estado", "Acciones"],
+        ["Usuario", "Nombre", "Carrera", "Semestre", "Grupos", "Estado", "Acciones"],
         users.map(item => [
             escapeHtml(item.username),
             `${escapeHtml(item.firstName)} ${escapeHtml(item.lastName)}<br><span class="support-text">${escapeHtml(item.email)}</span>`,
             escapeHtml(getLookupName(snapshot.careers, item.careerId)),
             escapeHtml(getLookupName(snapshot.semesters, item.semesterId)),
             renderUserGroupsBadges(item.groups),
-            escapeHtml(item.hashMethod || "SIN DEFINIR"),
             renderStatusTag(item.active ? "Activo" : "Inactivo"),
             tableActions(
                 () => editUser(item),
@@ -625,9 +727,11 @@ function renderEquipmentModule() {
     renderKpiCards("equipmentModuleKpis", [
         { label: "Disponibles", value: dashboard.kpis.availableComputers, note: "Equipos listos", tone: "success" },
         { label: "Ocupados", value: dashboard.kpis.occupiedComputers, note: "Sesion activa", tone: "warning" },
+        { label: "Sesiones por revisar", value: dashboard.kpis.orphanedComputers, note: "Requieren revision", tone: "danger" }
+    ]);
+    renderKpiCards("equipmentExtraKpis", [
         { label: "Bloqueados", value: dashboard.kpis.lockedComputers, note: "Sesion bloqueada", tone: "info" },
         { label: "Desconectados", value: dashboard.kpis.disconnectedComputers, note: "Sesion en pausa", tone: "slate" },
-        { label: "Huerfanas", value: dashboard.kpis.orphanedComputers, note: "Sin heartbeat reciente", tone: "danger" },
         { label: "Offline recuperadas", value: recoveredOfflineCount, note: "Equipos activos sincronizados desde cache", tone: "info" },
         { label: "Deshabilitados", value: dashboard.kpis.disabledComputers, note: "No operativos", tone: "danger" }
     ]);
@@ -1783,8 +1887,17 @@ function updateTopbarDate() {
 function applySession(session) {
     state.sessionEpoch++;
     if (!session?.authenticated || state.session?.username !== session.username) {
+        clearImportReview();
+        const fileInput = document.getElementById("userFile");
+        if (fileInput) fileInput.value = "";
+        const importResult = document.getElementById("importResult");
+        if (importResult) importResult.textContent = "";
         state.snapshot = null;
         state.usersPage = null;
+        state.usersPageQuery = null;
+        state.usersLoadFailed = false;
+        state.reportsQuery = null;
+        state.reportsLoadFailed = false;
         state.dashboard = null;
         state.reports = null;
         state.lastRefreshAt = null;
@@ -1940,7 +2053,7 @@ function bindAccessibility() {
             event.preventDefault();
             closeDrawers();
         } else if (event.key === "Tab") {
-            const controls = [...drawer.querySelectorAll('button, input:not([type="hidden"]), select, textarea, a[href], [tabindex="0"]')].filter(isFocusable);
+            const controls = [...drawer.querySelectorAll('button, input:not([type="hidden"]), select, textarea, summary, a[href], [tabindex="0"]')].filter(isFocusable);
             const first = controls[0];
             const last = controls.at(-1);
             if (!first) { event.preventDefault(); drawer.focus(); }
@@ -2152,36 +2265,57 @@ function syncViewState() {
 
 function syncEquipmentTabs() {
     document.querySelectorAll("[data-equipment-tab]").forEach(button => {
-        button.classList.toggle("is-active", button.dataset.equipmentTab === state.currentEquipmentTab);
-    });
-    document.querySelectorAll("#equipmentView .tab-panel").forEach(panel => {
-        panel.classList.toggle("is-active", panel.id === `equipment${capitalize(state.currentEquipmentTab)}Panel`);
+        const selected = button.dataset.equipmentTab === state.currentEquipmentTab;
+        button.classList.toggle("is-active", selected);
+        button.setAttribute("aria-selected", String(selected));
+        button.tabIndex = selected ? 0 : -1;
+        const panel = document.getElementById(button.getAttribute("aria-controls"));
+        if (panel) { panel.hidden = !selected; panel.classList.toggle("is-active", selected); }
     });
 }
 
 function syncAcademicTabs() {
     document.querySelectorAll("[data-academic-tab]").forEach(button => {
-        button.classList.toggle("is-active", button.dataset.academicTab === state.currentAcademicTab);
-    });
-    document.querySelectorAll("#academicView .tab-panel").forEach(panel => {
-        panel.classList.toggle("is-active", panel.id === `${state.currentAcademicTab}Panel`);
+        const selected = button.dataset.academicTab === state.currentAcademicTab;
+        button.classList.toggle("is-active", selected);
+        button.setAttribute("aria-selected", String(selected));
+        button.tabIndex = selected ? 0 : -1;
+        const panel = document.getElementById(button.getAttribute("aria-controls"));
+        if (panel) { panel.hidden = !selected; panel.classList.toggle("is-active", selected); }
     });
 }
 
 function updateGlobalSearchPlaceholder() {
     const input = document.getElementById("globalSearch");
     const mappings = {
-        overview: "Buscar usuario, equipo o accion...",
-        users: "Buscar usuario, documento o correo...",
-        equipment: "Buscar equipo, inventario o IP...",
-        academic: "Buscar carrera o semestre...",
-        reports: "Buscar estudiante, grupo o tendencia...",
-        import: "Buscar acciones de importacion...",
-        audit: "Buscar actor, accion, entidad o IP...",
-        configuration: "Buscar host, usuario o ajuste..."
+        users: ["Buscar en usuarios: nombre, documento o correo...", state.filters.users.query],
+        equipment: ["Buscar en equipos: nombre, inventario o IP...", state.filters.equipment.query],
+        academic: ["Buscar en catalogos...", state.filters.academic.query],
+        reports: ["Buscar estudiante en reportes...", document.getElementById("reportUsernameFilter").value],
+        audit: ["Buscar en auditoria: actor, accion o IP...", state.filters.audit.query]
     };
+    const mapping = mappings[state.currentView];
+    input.disabled = !mapping;
+    input.placeholder = mapping ? mapping[0] : "Selecciona un modulo para buscar";
+    input.value = mapping ? mapping[1] : "";
+    input.setAttribute("aria-label", mapping ? mapping[0] : "Busqueda no disponible en esta seccion");
+}
 
-    input.placeholder = mappings[state.currentView] || mappings.overview;
+function clearImportReview() {
+    state.importRevision++;
+    state.importReview = null;
+    const review = document.getElementById("importReview");
+    if (review) review.hidden = true;
+}
+
+function syncDatabaseTlsFields() {
+    const postgres = document.getElementById("dbProvider").value === "PostgreSql";
+    const ssl = document.getElementById("dbSslMode");
+    ssl.disabled = !postgres;
+    document.getElementById("dbRootCertificateField").hidden = !postgres || !["VerifyCA", "VerifyFull"].includes(ssl.value);
+    document.getElementById("dbTlsProviderNote").textContent = postgres
+        ? "VerifyFull comprueba la CA y el nombre o IP del servidor."
+        : "El TLS de MySQL se determina por la configuracion predeterminada del proveedor; este formulario no lo modifica.";
 }
 
 function bindForms() {
@@ -2221,7 +2355,9 @@ function bindForms() {
 
     document.getElementById("dbProvider").addEventListener("change", () => {
         document.getElementById("dbPort").value = document.getElementById("dbProvider").value === "MySql" ? 3306 : 5432;
+        syncDatabaseTlsFields();
     });
+    document.getElementById("dbSslMode").addEventListener("change", syncDatabaseTlsFields);
 
     document.getElementById("testDatabaseBtn").addEventListener("click", async () => {
         const form = document.getElementById("databaseConfigForm");
@@ -2249,6 +2385,7 @@ function bindForms() {
             return;
         }
 
+        if (!window.confirm("Esta accion puede modificar tablas de la base seleccionada. Confirma que tienes autorizacion y un respaldo verificado. ¿Continuar?")) return;
         resultHost.textContent = "Ajustando tablas auxiliares de AdminWeb...";
         try {
             const result = await fetchJson("/api/configuration/database/schema", {
@@ -2264,6 +2401,10 @@ function bindForms() {
     bindSubmit("databaseConfigForm", async event => {
         event.preventDefault();
         const resultHost = document.getElementById("databaseConfigResult");
+        if (event.currentTarget.dataset.deploymentManaged === "true" &&
+            !window.confirm("La configuracion guardada sustituira la conexion del despliegue al reiniciar y puede cambiar TLS. Verifica los datos y consulta la guia. ¿Continuar?")) return;
+        if (document.getElementById("dbAutoInitialize").checked &&
+            !window.confirm("La inicializacion automatica puede modificar tablas al reiniciar. ¿Tienes autorizacion y respaldo verificado?")) return;
         resultHost.textContent = "Guardando configuracion...";
         try {
             const result = await fetchJson("/api/configuration/database", {
@@ -2456,30 +2597,85 @@ function bindForms() {
     bindSubmit("importForm", async event => {
         event.preventDefault();
         const fileInput = document.getElementById("userFile");
-        if (!fileInput.files.length) {
-            return;
-        }
-
+        clearImportReview();
+        if (!fileInput.files.length) return;
+        const file = fileInput.files[0];
+        const revision = state.importRevision;
+        const epoch = state.sessionEpoch;
         const formData = new FormData();
-        formData.append("file", fileInput.files[0]);
-
+        formData.append("file", file);
         const resultHost = document.getElementById("importResult");
-        const previewResponse = await fetch("/api/import/users?preview=true", {
-            method: "POST", headers: { "X-OpenCredential-Request": "1" }, body: formData
-        });
-        const preview = await previewResponse.json();
-        if (!previewResponse.ok) { resultHost.textContent = preview.message || preview.title || "No fue posible validar el archivo."; return; }
-        resultHost.textContent = `Previsualizacion: ${preview.imported} nuevos, ${preview.updated} actualizaciones. ${preview.warnings.join(" | ")}`;
-        if (!window.confirm(`Se importaran ${preview.imported} usuarios y se actualizaran ${preview.updated}. Las filas invalidas se omitiran. ¿Continuar?`)) return;
-        const response = await fetch("/api/import/users", {
-            method: "POST", headers: { "X-OpenCredential-Request": "1" }, body: formData
-        });
-        const result = await response.json();
-        if (!response.ok) { resultHost.textContent = result.message || result.title || "No fue posible importar."; return; }
-        document.getElementById("importResult").textContent =
-            `Importados: ${result.imported}. Actualizados: ${result.updated}. ${result.warnings.length ? result.warnings.join(" | ") : "Sin advertencias."}`;
-        event.target.reset();
-        await loadAll();
+        resultHost.textContent = "Revisando archivo...";
+        try {
+            const response = await fetch("/api/import/users?preview=true", {
+                method: "POST", headers: { "X-OpenCredential-Request": "1" }, body: formData
+            });
+            const preview = await response.json();
+            if (epoch !== state.sessionEpoch || revision !== state.importRevision) return;
+            if (!response.ok) { resultHost.textContent = preview.message || preview.title || "No fue posible validar el archivo."; return; }
+            const warnings = Array.isArray(preview.warnings) ? preview.warnings : [];
+            const list = document.getElementById("importReviewWarnings");
+            list.replaceChildren();
+            warnings.forEach(warning => {
+                const item = document.createElement("li");
+                item.textContent = warning;
+                list.appendChild(item);
+            });
+            list.hidden = warnings.length === 0;
+            document.getElementById("importReviewSummary").textContent = `${preview.imported} nuevos, ${preview.updated} actualizaciones, ${warnings.length} advertencias.`;
+            document.getElementById("confirmImportBtn").disabled = !(preview.imported + preview.updated > 0);
+            state.importReview = { file, revision, epoch };
+            document.getElementById("importReview").hidden = false;
+            resultHost.textContent = "Revision completada. Aun no se han importado usuarios.";
+        } catch {
+            if (epoch === state.sessionEpoch && revision === state.importRevision)
+                resultHost.textContent = "No fue posible revisar el archivo. Comprueba la conexion y vuelve a intentarlo.";
+        }
+    });
+
+    document.getElementById("userFile").addEventListener("change", () => {
+        clearImportReview();
+        document.getElementById("importResult").textContent = "";
+    });
+
+    document.getElementById("confirmImportBtn").addEventListener("click", async event => {
+        const review = state.importReview;
+        if (!review || review.epoch !== state.sessionEpoch || review.revision !== state.importRevision) return;
+        const button = event.currentTarget;
+        const fileInput = document.getElementById("userFile");
+        const previewButton = document.getElementById("previewImportBtn");
+        const resultHost = document.getElementById("importResult");
+        button.disabled = true;
+        fileInput.disabled = true;
+        previewButton.disabled = true;
+        resultHost.textContent = "Importando usuarios...";
+        const formData = new FormData();
+        formData.append("file", review.file);
+        try {
+            const response = await fetch("/api/import/users", {
+                method: "POST", headers: { "X-OpenCredential-Request": "1" }, body: formData
+            });
+            const result = await response.json();
+            if (review.epoch !== state.sessionEpoch) return;
+            if (!response.ok) {
+                clearImportReview();
+                resultHost.textContent = "No se pudo confirmar la importacion. Verifica los datos antes de volver a revisar el archivo.";
+                return;
+            }
+            const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+            resultHost.textContent = `Importados: ${result.imported}. Actualizados: ${result.updated}. ${warnings.length ? warnings.join(" | ") : "Sin advertencias."}`;
+            clearImportReview();
+            document.getElementById("importForm").reset();
+            await loadAll();
+        } catch {
+            if (review.epoch === state.sessionEpoch) {
+                clearImportReview();
+                resultHost.textContent = "No se pudo confirmar el resultado. La operacion podria haberse aplicado; verifica los datos antes de reintentar.";
+            }
+        } finally {
+            fileInput.disabled = false;
+            previewButton.disabled = false;
+        }
     });
 
     document.getElementById("rangeDays").addEventListener("change", loadAll);
@@ -2489,11 +2685,10 @@ function bindForms() {
     document.getElementById("reportFromDate").addEventListener("change", loadAll);
     document.getElementById("reportToDate").addEventListener("change", loadAll);
     document.getElementById("reportCareerFilter").addEventListener("change", loadAll);
-    document.getElementById("reportSemesterFilter").addEventListener("change", loadAll);
-    document.getElementById("reportGroupFilter").addEventListener("change", loadAll);
-    document.getElementById("reportOriginFilter").addEventListener("change", loadAll);
-    document.getElementById("reportSessionStateFilter").addEventListener("change", loadAll);
-    document.getElementById("reportUsernameFilter").addEventListener("input", debounceLoadAll);
+    ["reportSemesterFilter", "reportGroupFilter", "reportOriginFilter", "reportSessionStateFilter"].forEach(id => {
+        document.getElementById(id).addEventListener("change", () => { updateReportAdvancedFilterCount(); loadAll(); });
+    });
+    document.getElementById("reportUsernameFilter").addEventListener("input", () => { updateReportAdvancedFilterCount(); updateReportLoadStatus(); debounceLoadAll(); });
 
     document.getElementById("userSearch").addEventListener("input", event => {
         state.filters.users.query = event.target.value.trim().toLowerCase();
@@ -2562,12 +2757,32 @@ function bindForms() {
             renderAcademicModule();
         } else if (state.currentView === "reports") {
             document.getElementById("reportUsernameFilter").value = event.target.value;
+            updateReportAdvancedFilterCount();
+            updateReportLoadStatus();
             debounceLoadAll();
         } else if (state.currentView === "audit") {
             state.filters.audit.query = value;
             document.getElementById("auditSearch").value = event.target.value;
             renderAuditModule();
         }
+    });
+}
+
+function bindRovingTabs(selector, activate) {
+    const tabs = [...document.querySelectorAll(selector)];
+    tabs.forEach((button, index) => {
+        button.addEventListener("click", () => activate(button));
+        button.addEventListener("keydown", event => {
+            let next = index;
+            if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+            else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+            else if (event.key === "Home") next = 0;
+            else if (event.key === "End") next = tabs.length - 1;
+            else return;
+            event.preventDefault();
+            tabs[next].click();
+            tabs[next].focus();
+        });
     });
 }
 
@@ -2580,18 +2795,20 @@ function bindNavigation() {
         });
     });
 
-    document.querySelectorAll("[data-equipment-tab]").forEach(button => {
-        button.addEventListener("click", () => {
-            state.currentEquipmentTab = button.dataset.equipmentTab;
-            syncEquipmentTabs();
-        });
+    bindRovingTabs("[data-equipment-tab]", button => {
+        state.currentEquipmentTab = button.dataset.equipmentTab;
+        syncEquipmentTabs();
     });
 
-    document.querySelectorAll("[data-academic-tab]").forEach(button => {
-        button.addEventListener("click", () => {
-            state.currentAcademicTab = button.dataset.academicTab;
-            renderAcademicModule();
-        });
+    bindRovingTabs("[data-report-tab]", button => {
+        state.currentReportTab = button.dataset.reportTab;
+        syncReportTabs();
+    });
+    syncReportTabs();
+
+    bindRovingTabs("[data-academic-tab]", button => {
+        state.currentAcademicTab = button.dataset.academicTab;
+        renderAcademicModule();
     });
 
     document.getElementById("quickNewUserBtn").addEventListener("click", () => {
@@ -2687,6 +2904,9 @@ function getDatabaseConfigPayload() {
         username: document.getElementById("dbUsername").value,
         password: document.getElementById("dbPassword").value,
         sslMode: document.getElementById("dbSslMode").value,
+        rootCertificate: document.getElementById("dbProvider").value === "PostgreSql" &&
+            ["VerifyCA", "VerifyFull"].includes(document.getElementById("dbSslMode").value)
+            ? document.getElementById("dbRootCertificate").value : null,
         autoInitialize: document.getElementById("dbAutoInitialize").checked
     };
 }
@@ -2829,6 +3049,7 @@ let debounceHandle = null;
 let usersDebounceHandle = null;
 function debounceUsersLoad() {
     clearTimeout(usersDebounceHandle);
+    if (state.currentView === "users") renderUsersModule();
     usersDebounceHandle = setTimeout(() => loadAll({ background: true }), 250);
 }
 function debounceLoadAll() {

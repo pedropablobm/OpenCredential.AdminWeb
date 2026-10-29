@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenCredential AdminWeb</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20261029-2" />
 </head>
 <body>
     <a class="skip-link" href="#mainContent">Saltar al contenido principal</a>
@@ -43,7 +43,7 @@
                     <p class="nav-label">General</p>
                     <button type="button" class="nav-item is-active" data-view="overview">
                         <span class="nav-icon"></span>
-                        <span>Overview</span>
+                        <span>Inicio</span>
                     </button>
                     <button type="button" class="nav-item" data-view="users">
                         <span class="nav-icon"></span>
@@ -118,19 +118,16 @@
                 <section class="connection-banner" aria-label="Estado de actualizacion de los datos">
                     <div>
                         <p id="dataConnectionStatus" role="status" aria-live="polite" data-status="loading">Pendiente de cargar datos</p>
-                        <p class="support-text" id="lastRefreshAt">Sin una actualizacion correcta en esta sesion</p>
+                        <p class="support-text" id="lastRefreshAt">Sin una actualizacion correcta del resumen en esta sesion</p>
                     </div>
                     <button type="button" class="btn btn-secondary" id="retryDataBtn">Actualizar datos</button>
                 </section>
                 <section class="module-view is-active" id="overviewView">
                     <div class="hero-card card">
                         <div>
-                            <p class="breadcrumb">Inicio / Overview</p>
-                            <h2>Estado general del laboratorio y la administracion</h2>
-                            <p class="section-copy">
-                                La portada queda enfocada en resumen operativo, tendencias y alertas, sin mezclar
-                                catalogos, formularios tecnicos y tablas largas en la misma vista.
-                            </p>
+                            <p class="breadcrumb">Inicio</p>
+                            <h2>Resumen del laboratorio</h2>
+                            <p class="section-copy">Consulta el estado de los equipos y las alertas que requieren revision.</p>
                         </div>
                         <div class="hero-actions">
                             <button type="button" class="btn btn-primary" id="quickNewUserBtn">Nuevo usuario</button>
@@ -141,6 +138,10 @@
 
                     <div class="kpi-grid" id="overviewKpiCards"></div>
 
+                    <details class="card overview-details">
+                        <summary>Ver mas indicadores y estadisticas</summary>
+                        <div class="overview-details-content">
+                    <div class="mini-kpi-grid" id="overviewExtraKpiCards"></div>
                     <section class="card section-card">
                         <div class="section-head">
                             <div>
@@ -212,6 +213,8 @@
                         </div>
                         <div class="trend-chart" id="dailyUsageTrend"></div>
                     </section>
+                        </div>
+                    </details>
 
                     <div class="overview-grid">
                         <section class="card section-card">
@@ -266,6 +269,7 @@
                                 <select id="userCareerFilter"></select>
                             </label>
                         </div>
+                        <p class="support-text section-load-status" id="usersLoadStatus" role="status" aria-live="polite" hidden></p>
                         <p class="summary-line" id="usersSummary"></p>
                         <div class="table-host" id="usersTable"></div>
                     </section>
@@ -285,6 +289,10 @@
                     </div>
 
                     <div class="mini-kpi-grid" id="equipmentModuleKpis"></div>
+                    <details class="card overview-details equipment-details">
+                        <summary>Ver otros estados de equipos</summary>
+                        <div class="mini-kpi-grid overview-details-content" id="equipmentExtraKpis"></div>
+                    </details>
 
                     <section class="card section-card">
                         <div class="section-head">
@@ -293,10 +301,10 @@
                                 <h3>Inventario y estado</h3>
                             </div>
                         </div>
-                        <div class="module-tabs">
-                            <button type="button" class="tab-button is-active" data-equipment-tab="list">Lista</button>
-                            <button type="button" class="tab-button" data-equipment-tab="map">Mapa visual</button>
-                            <button type="button" class="tab-button" data-equipment-tab="activity">Actividad reciente</button>
+                        <div class="module-tabs" role="tablist" aria-label="Vistas de equipos">
+                            <button type="button" class="tab-button is-active" id="equipmentTabList" data-equipment-tab="list" role="tab" aria-selected="true" aria-controls="equipmentListPanel" tabindex="0">Lista</button>
+                            <button type="button" class="tab-button" id="equipmentTabMap" data-equipment-tab="map" role="tab" aria-selected="false" aria-controls="equipmentMapPanel" tabindex="-1">Mapa visual</button>
+                            <button type="button" class="tab-button" id="equipmentTabActivity" data-equipment-tab="activity" role="tab" aria-selected="false" aria-controls="equipmentActivityPanel" tabindex="-1">Actividad reciente</button>
                         </div>
                         <div class="filter-grid users-filter-grid">
                             <label class="filter-wide">
@@ -321,10 +329,10 @@
                             </label>
                         </div>
 
-                        <div class="tab-panel is-active" id="equipmentListPanel">
+                        <div class="tab-panel is-active" id="equipmentListPanel" role="tabpanel" aria-labelledby="equipmentTabList" tabindex="0">
                             <div class="table-host" id="computersTable"></div>
                         </div>
-                        <div class="tab-panel" id="equipmentMapPanel">
+                        <div class="tab-panel" id="equipmentMapPanel" role="tabpanel" aria-labelledby="equipmentTabMap" tabindex="0" hidden>
                             <div class="room-tabs" id="roomTabs"></div>
                             <div class="map-toolbar">
                                 <label class="filter-wide">
@@ -336,7 +344,8 @@
                                     <button type="button" class="btn btn-secondary" id="editLayoutBtn">Configurar mapa visual</button>
                                 </div>
                             </div>
-                            <div class="map-explainer card soft-card">
+                            <details class="map-explainer card soft-card">
+                                <summary>Significado de los estados del mapa</summary>
                                 <div>
                                     <p class="section-label">Vista operativa</p>
                                     <h4>Distribucion fisica configurable por sala</h4>
@@ -352,7 +361,7 @@
                                     <span class="legend-item"><span class="legend-dot empty"></span> Sin equipo</span>
                                 </div>
                                 <p class="support-text">Los badges azules indican sesiones sincronizadas desde cache offline. Los badges rojos resaltan cierres o reconciliaciones que requieren atencion.</p>
-                            </div>
+                            </details>
                             <div class="room-layout-shell">
                                 <div class="room-layout" id="roomLayoutGrid"></div>
                                 <aside class="room-detail-panel" id="roomDetailPanel">
@@ -360,7 +369,7 @@
                                 </aside>
                             </div>
                         </div>
-                        <div class="tab-panel" id="equipmentActivityPanel">
+                        <div class="tab-panel" id="equipmentActivityPanel" role="tabpanel" aria-labelledby="equipmentTabActivity" tabindex="0" hidden>
                             <div class="activity-list" id="equipmentActivityList"></div>
                         </div>
                     </section>
@@ -371,15 +380,15 @@
                         <div>
                             <p class="breadcrumb">Gestion / Academico</p>
                             <h2>Catalogos academicos</h2>
-                            <p class="section-copy">Carreras y semestres viven en un espacio mas liviano y facil de mantener.</p>
+                            <p class="section-copy">Administra carreras y semestres.</p>
                         </div>
                         <button type="button" class="btn btn-primary" id="academicActionBtn">Nueva carrera</button>
                     </div>
 
                     <section class="card section-card">
-                        <div class="module-tabs">
-                            <button type="button" class="tab-button is-active" data-academic-tab="careers">Carreras</button>
-                            <button type="button" class="tab-button" data-academic-tab="semesters">Semestres</button>
+                        <div class="module-tabs" role="tablist" aria-label="Catalogos academicos">
+                            <button type="button" class="tab-button is-active" id="academicTabCareers" data-academic-tab="careers" role="tab" aria-selected="true" aria-controls="careersPanel" tabindex="0">Carreras</button>
+                            <button type="button" class="tab-button" id="academicTabSemesters" data-academic-tab="semesters" role="tab" aria-selected="false" aria-controls="semestersPanel" tabindex="-1">Semestres</button>
                         </div>
                         <div class="filter-grid">
                             <label class="filter-wide">
@@ -387,10 +396,10 @@
                                 <input type="text" id="academicSearch" placeholder="Nombre del catalogo" />
                             </label>
                         </div>
-                        <div class="tab-panel is-active" id="careersPanel">
+                        <div class="tab-panel is-active" id="careersPanel" role="tabpanel" aria-labelledby="academicTabCareers" tabindex="0">
                             <div class="table-host" id="careersTable"></div>
                         </div>
-                        <div class="tab-panel" id="semestersPanel">
+                        <div class="tab-panel" id="semestersPanel" role="tabpanel" aria-labelledby="academicTabSemesters" tabindex="0" hidden>
                             <div class="table-host" id="semestersTable"></div>
                         </div>
                     </section>
@@ -401,7 +410,7 @@
                         <div>
                             <p class="breadcrumb">Operacion / Importaciones</p>
                             <h2>Carga masiva de usuarios</h2>
-                            <p class="section-copy">Sube CSV, TXT o TSV sin competir con dashboard, catalogos o formularios de otras areas.</p>
+                            <p class="section-copy">Selecciona un archivo, revisa los cambios y confirma la importacion.</p>
                         </div>
                     </div>
 
@@ -409,17 +418,25 @@
                         <div class="import-dropzone">
                             <div>
                                 <h3>Archivo plano de usuarios</h3>
-                                <p class="section-copy">Formato esperado: <code>username</code>, <code>firstName</code>, <code>lastName</code>, <code>email</code>, <code>documentId</code>, <code>career</code>, <code>semester</code>, <code>active</code>, <code>hashMethod</code> y <code>password</code>. Si no envias <code>password</code>, los usuarios nuevos quedan con el documento como clave temporal.</p>
+                                <p class="section-copy">Los usuarios nuevos requieren una clave inicial. Al actualizar un usuario existente, omitir la clave conserva la actual. Consulta la plantilla para conocer las columnas.</p>
                                 <div class="import-resources">
                                     <a class="btn btn-secondary" href="/templates/plantilla_usuarios_opencredential.csv" download>Descargar plantilla CSV</a>
                                     <a class="btn btn-secondary" href="/templates/guia_importacion_usuarios.txt" download>Descargar guia de columnas</a>
                                 </div>
                             </div>
                             <form id="importForm" class="stack-form">
+                                <label for="userFile">Archivo de usuarios (CSV, TXT o TSV)</label>
                                 <input type="file" id="userFile" name="file" accept=".csv,.txt,.tsv" required />
-                                <button type="submit" class="btn btn-primary">Importar usuarios</button>
+                                <button type="submit" class="btn btn-primary" id="previewImportBtn">Revisar archivo</button>
                             </form>
-                            <p class="support-text" id="importResult"></p>
+                            <section class="import-review card soft-card" id="importReview" aria-labelledby="importReviewTitle" hidden>
+                                <h4 id="importReviewTitle">Revisar antes de importar</h4>
+                                <p id="importReviewSummary"></p>
+                                <p class="support-text">La confirmacion vuelve a validar el archivo; los datos pueden haber cambiado desde la revision. Las filas invalidas se omiten.</p>
+                                <ul id="importReviewWarnings"></ul>
+                                <button type="button" class="btn btn-primary" id="confirmImportBtn">Confirmar importacion</button>
+                            </section>
+                            <p class="support-text" id="importResult" role="status" aria-live="polite"></p>
                         </div>
                     </section>
                 </section>
@@ -457,6 +474,10 @@
                                 Carrera
                                 <select id="reportCareerFilter"></select>
                             </label>
+                        </div>
+                        <details class="report-filters">
+                            <summary>Filtros adicionales <span id="reportAdvancedFilterCount" aria-live="polite"></span></summary>
+                            <div class="filter-grid report-advanced-grid">
                             <label>
                                 Semestre
                                 <select id="reportSemesterFilter"></select>
@@ -487,11 +508,29 @@
                                     <option value="ended">Finalizada</option>
                                 </select>
                             </label>
-                        </div>
+                            </div>
+                        </details>
                     </section>
 
-                    <div class="mini-kpi-grid" id="reportsKpiCards"></div>
+                    <p class="support-text section-load-status" id="reportsLoadStatus" role="status" aria-live="polite"></p>
+                    <div id="reportResults" hidden>
+                    <p class="support-text">CSV exporta las sesiones cargadas; PDF utiliza los filtros actuales.</p>
+                    <div class="module-tabs" role="tablist" aria-label="Secciones de reportes">
+                        <button type="button" class="tab-button is-active" id="reportTabSummary" data-report-tab="summary" role="tab" aria-selected="true" aria-controls="reportSummaryPanel" tabindex="0">Resumen</button>
+                        <button type="button" class="tab-button" id="reportTabUsage" data-report-tab="usage" role="tab" aria-selected="false" aria-controls="reportUsagePanel" tabindex="-1">Uso</button>
+                        <button type="button" class="tab-button" id="reportTabTop" data-report-tab="top" role="tab" aria-selected="false" aria-controls="reportTopPanel" tabindex="-1">Destacados</button>
+                        <button type="button" class="tab-button" id="reportTabSessions" data-report-tab="sessions" role="tab" aria-selected="false" aria-controls="reportSessionsPanel" tabindex="-1">Sesiones</button>
+                    </div>
 
+                    <section class="tab-panel is-active" id="reportSummaryPanel" role="tabpanel" aria-labelledby="reportTabSummary" tabindex="0">
+                        <div class="mini-kpi-grid" id="reportsKpiCards"></div>
+                        <details class="card overview-details">
+                            <summary>Ver otros indicadores del reporte</summary>
+                            <div class="mini-kpi-grid overview-details-content" id="reportsExtraKpis"></div>
+                        </details>
+                    </section>
+
+                    <section class="tab-panel" id="reportUsagePanel" role="tabpanel" aria-labelledby="reportTabUsage" tabindex="0" hidden>
                     <div class="overview-grid">
                         <section class="card section-card">
                             <div class="section-head">
@@ -535,7 +574,9 @@
                             <div class="chart-bars" id="reportsUsageByRoom"></div>
                         </section>
                     </div>
+                    </section>
 
+                    <section class="tab-panel" id="reportTopPanel" role="tabpanel" aria-labelledby="reportTabTop" tabindex="0" hidden>
                     <div class="overview-grid">
                         <section class="card section-card">
                             <div class="section-head">
@@ -557,7 +598,9 @@
                             <div class="table-host" id="reportTopEquipmentTable"></div>
                         </section>
                     </div>
+                    </section>
 
+                    <section class="tab-panel" id="reportSessionsPanel" role="tabpanel" aria-labelledby="reportTabSessions" tabindex="0" hidden>
                     <section class="card section-card">
                         <div class="section-head">
                             <div>
@@ -567,6 +610,8 @@
                         </div>
                         <div class="table-host" id="reportSessionsTable"></div>
                     </section>
+                    </section>
+                    </div>
                 </section>
 
                 <section class="module-view" id="auditView">
@@ -605,6 +650,10 @@
                                 <h3>PostgreSQL o MySQL</h3>
                             </div>
                         </div>
+                        <p class="support-text config-current" id="databaseConfigSummary" role="status" aria-live="polite">Cargando informacion de conexion...</p>
+                        <p class="support-text" id="databaseConfigNotice">Probar conexion no guarda cambios. La configuracion guardada se aplica al reiniciar.</p>
+                        <details class="config-editor" id="databaseEditor">
+                            <summary>Editar o probar otra conexion</summary>
                         <form id="databaseConfigForm" class="drawer-form">
                             <div class="config-layout">
                                 <section class="config-panel">
@@ -643,25 +692,35 @@
                                         </label>
                                         <label>
                                             SSL
-                                            <select id="dbSslMode">
+                                            <select id="dbSslMode" required>
+                                                <option value="" disabled selected>Selecciona el modo SSL</option>
                                                 <option value="Disable">SSL deshabilitado</option>
                                                 <option value="Prefer">SSL preferido</option>
                                                 <option value="Require">SSL requerido</option>
+                                                <option value="VerifyCA">Verificar CA</option>
+                                                <option value="VerifyFull">Verificar CA y servidor (recomendado)</option>
                                             </select>
                                         </label>
+                                        <div class="full-span" id="dbRootCertificateField" hidden>
+                                            <label for="dbRootCertificate">Certificado publico de la CA (ruta en AdminWeb)</label>
+                                            <input type="text" id="dbRootCertificate" placeholder="Ej. /certs/postgres-ca.crt" spellcheck="false" />
+                                            <p class="support-text">Opcional si la CA ya es confiable en el sistema. En Docker, la ruta debe existir dentro del contenedor.</p>
+                                        </div>
+                                        <p class="support-text full-span" id="dbTlsProviderNote"></p>
+                                        <p class="support-text full-span">Una clave guardada solo se reutiliza para el mismo servidor, puerto, base y usuario.</p>
                                         <label class="toggle-card">
-                                            <input type="checkbox" id="dbAutoInitialize" checked />
+                                            <input type="checkbox" id="dbAutoInitialize" />
                                             <span>Crear o actualizar tablas automaticamente al iniciar</span>
                                         </label>
                                     </div>
                                 </section>
 
-                                <aside class="config-sidecard">
+                                <details class="config-sidecard">
+                                    <summary>Guia y precauciones de configuracion</summary>
                                     <div class="config-callout">
                                         <strong>Esquema complementario de la consola</strong>
                                         <p>
-                                            OpenCredential puede crear primero las tablas base. Luego AdminWeb agrega o ajusta
-                                            solo sus tablas auxiliares para salas, auditoria, inventario y administracion.
+                                            Ajustar tablas modifica la base de datos. Antes de hacerlo, verifica la compatibilidad y un respaldo.
                                         </p>
                                     </div>
                                     <div class="config-steps">
@@ -676,26 +735,27 @@
                                             <span>2</span>
                                             <div>
                                                 <strong>Ajustar tablas de AdminWeb</strong>
-                                                <p>Crea o corrige las tablas adicionales sin reinstalar OpenCredential.</p>
+                                                <p>Puede modificar tablas y requiere autorizacion y respaldo previo.</p>
                                             </div>
                                         </div>
                                         <div class="config-step">
                                             <span>3</span>
                                             <div>
                                                 <strong>Guardar configuracion</strong>
-                                                <p>Deja la conexion persistida para los siguientes reinicios del contenedor.</p>
+                                                <p>La configuracion guardada prevalece sobre las variables de despliegue tras reiniciar.</p>
                                             </div>
                                         </div>
                                     </div>
-                                </aside>
+                                </details>
                             </div>
                             <div class="drawer-actions config-actions">
                                 <button type="button" class="btn btn-secondary" id="testDatabaseBtn">Probar conexion</button>
                                 <button type="button" class="btn btn-secondary" id="applySchemaBtn">Ajustar tablas de AdminWeb</button>
                                 <button type="submit" class="btn btn-primary">Guardar configuracion</button>
                             </div>
-                            <p class="support-text config-result" id="databaseConfigResult"></p>
+                            <p class="support-text config-result" id="databaseConfigResult" role="status" aria-live="polite"></p>
                         </form>
+                        </details>
                     </section>
                 </section>
             </div>
@@ -710,7 +770,7 @@
                 <p class="section-label">Usuarios</p>
                 <h3 id="userDrawerTitle">Nuevo usuario</h3>
             </div>
-            <button type="button" class="icon-close" data-close-drawer="userDrawer">×</button>
+            <button type="button" class="icon-close" data-close-drawer="userDrawer" aria-label="Cerrar formulario de usuario">×</button>
         </div>
         <form id="userForm" class="drawer-form">
             <input type="hidden" id="userId" />
@@ -744,23 +804,6 @@
                     <select id="userSemester"></select>
                 </label>
                 <label>
-                    Algoritmo hash
-                    <select id="userHashMethod">
-                        <option value="BCRYPT">BCRYPT (Recomendado)</option>
-                        <option value="SHA512">SHA512</option>
-                        <option value="SSHA512">SSHA512</option>
-                        <option value="SHA384">SHA384</option>
-                        <option value="SSHA384">SSHA384</option>
-                        <option value="SHA256">SHA256</option>
-                        <option value="SSHA256">SSHA256</option>
-                        <option value="SHA1">SHA1</option>
-                        <option value="SSHA1">SSHA1</option>
-                        <option value="MD5">MD5</option>
-                        <option value="SMD5">SMD5</option>
-                        <option value="NONE">NONE</option>
-                    </select>
-                </label>
-                <label>
                     Clave
                     <input type="password" id="userPassword" placeholder="Clave del usuario" />
                 </label>
@@ -774,6 +817,27 @@
                     <button type="button" class="btn btn-secondary" id="resetPasswordBtn">Restablecer clave</button>
                 </div>
                 <p class="support-text full-span" id="passwordActionResult"></p>
+                <details class="form-options full-span">
+                    <summary>Opciones avanzadas de contraseña</summary>
+                    <p class="support-text">El algoritmo existente se conserva al editar sin cambiar la clave.</p>
+                    <label>
+                        Algoritmo hash
+                        <select id="userHashMethod">
+                            <option value="BCRYPT">BCRYPT (Recomendado)</option>
+                            <option value="SHA512">SHA512</option>
+                            <option value="SSHA512">SSHA512</option>
+                            <option value="SHA384">SHA384</option>
+                            <option value="SSHA384">SSHA384</option>
+                            <option value="SHA256">SHA256</option>
+                            <option value="SSHA256">SSHA256</option>
+                            <option value="SHA1">SHA1</option>
+                            <option value="SSHA1">SSHA1</option>
+                            <option value="MD5">MD5</option>
+                            <option value="SMD5">SMD5</option>
+                            <option value="NONE">NONE</option>
+                        </select>
+                    </label>
+                </details>
                 <label class="toggle-card full-span">
                     <input type="checkbox" id="userActive" checked />
                     <span>Usuario activo</span>
@@ -792,7 +856,7 @@
                 <p class="section-label">Equipos</p>
                 <h3 id="computerDrawerTitle">Nuevo equipo</h3>
             </div>
-            <button type="button" class="icon-close" data-close-drawer="computerDrawer">×</button>
+            <button type="button" class="icon-close" data-close-drawer="computerDrawer" aria-label="Cerrar formulario de equipo">×</button>
         </div>
         <form id="computerForm" class="drawer-form">
             <input type="hidden" id="computerId" />
@@ -839,7 +903,7 @@
                 <p class="section-label">Salas</p>
                 <h3 id="roomDrawerTitle">Nueva sala</h3>
             </div>
-            <button type="button" class="icon-close" data-close-drawer="roomDrawer">×</button>
+            <button type="button" class="icon-close" data-close-drawer="roomDrawer" aria-label="Cerrar formulario de sala">×</button>
         </div>
         <form id="roomForm" class="drawer-form">
             <input type="hidden" id="roomId" />
@@ -878,7 +942,7 @@
                 <p class="section-label">Mapa visual</p>
                 <h3 id="layoutDrawerTitle">Configurar distribucion fisica</h3>
             </div>
-            <button type="button" class="icon-close" data-close-drawer="layoutDrawer">×</button>
+            <button type="button" class="icon-close" data-close-drawer="layoutDrawer" aria-label="Cerrar editor de mapa">×</button>
         </div>
         <form id="layoutForm" class="drawer-form">
             <input type="hidden" id="layoutRoomId" />
@@ -968,7 +1032,7 @@
                 <p class="section-label">Catalogos</p>
                 <h3 id="careerDrawerTitle">Nueva carrera</h3>
             </div>
-            <button type="button" class="icon-close" data-close-drawer="careerDrawer">×</button>
+            <button type="button" class="icon-close" data-close-drawer="careerDrawer" aria-label="Cerrar formulario de carrera">×</button>
         </div>
         <form id="careerForm" class="drawer-form">
             <input type="hidden" id="careerId" />
@@ -995,7 +1059,7 @@
                 <p class="section-label">Catalogos</p>
                 <h3 id="semesterDrawerTitle">Nuevo semestre</h3>
             </div>
-            <button type="button" class="icon-close" data-close-drawer="semesterDrawer">×</button>
+            <button type="button" class="icon-close" data-close-drawer="semesterDrawer" aria-label="Cerrar formulario de semestre">×</button>
         </div>
         <form id="semesterForm" class="drawer-form">
             <input type="hidden" id="semesterId" />
@@ -1017,6 +1081,6 @@
     </aside>
 
     <div id="appFeedback" class="app-feedback" role="status" aria-live="polite" hidden></div>
-    <script src="/app.js?v=20261023-1"></script>
+    <script src="/app.js?v=20261029-2"></script>
 </body>
 </html>

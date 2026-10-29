@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenCredential Portal de Usuario</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20261029-2" />
 </head>
 <body class="portal-page">
     <div class="portal-auth-shell" id="portalAuthShell">
@@ -21,26 +21,34 @@
             </div>
 
             <form id="portalLoginForm" class="stack-form portal-auth-form is-active">
-                <input type="text" id="portalLoginUsername" placeholder="Usuario" required />
-                <input type="password" id="portalLoginPassword" placeholder="Clave" required />
+                <label for="portalLoginUsername">Usuario</label>
+                <input type="text" id="portalLoginUsername" name="username" autocomplete="username" spellcheck="false" required />
+                <label for="portalLoginPassword">Clave</label>
+                <input type="password" id="portalLoginPassword" name="password" autocomplete="current-password" required />
                 <button type="submit" class="btn btn-primary btn-block">Entrar al portal</button>
             </form>
 
             <form id="portalRecoveryForm" class="stack-form portal-auth-form" hidden>
-                <input type="text" id="portalRecoveryUsername" placeholder="Usuario" required />
-                <input type="text" id="portalRecoveryDocument" placeholder="Documento" required />
-                <input type="email" id="portalRecoveryEmail" placeholder="Correo institucional" required />
+                <label for="portalRecoveryUsername">Usuario</label>
+                <input type="text" id="portalRecoveryUsername" name="username" autocomplete="username" spellcheck="false" required />
+                <label for="portalRecoveryDocument">Documento</label>
+                <input type="text" id="portalRecoveryDocument" name="document" spellcheck="false" required />
+                <label for="portalRecoveryEmail">Correo institucional</label>
+                <input type="email" id="portalRecoveryEmail" name="email" autocomplete="email" spellcheck="false" required />
                 <button type="submit" class="btn btn-secondary btn-block">Solicitar token</button>
             </form>
 
             <form id="portalResetForm" class="stack-form portal-auth-form" hidden>
-                <input type="text" id="portalResetToken" placeholder="Token de recuperacion" required />
-                <input type="password" id="portalResetNewPassword" placeholder="Nueva clave" required />
-                <input type="password" id="portalResetConfirmPassword" placeholder="Confirmar nueva clave" required />
+                <label for="portalResetToken">Token de recuperacion</label>
+                <input type="text" id="portalResetToken" name="token" spellcheck="false" required />
+                <label for="portalResetNewPassword">Nueva clave</label>
+                <input type="password" id="portalResetNewPassword" name="newPassword" autocomplete="new-password" required />
+                <label for="portalResetConfirmPassword">Confirmar nueva clave</label>
+                <input type="password" id="portalResetConfirmPassword" name="confirmPassword" autocomplete="new-password" required />
                 <button type="submit" class="btn btn-primary btn-block">Restablecer clave</button>
             </form>
 
-            <p class="support-text" id="portalAuthResult">Inicia sesion para continuar.</p>
+            <p class="support-text" id="portalAuthResult" role="status" aria-live="polite">Inicia sesion para continuar.</p>
             <a class="link-button" href="/">Ir a la consola administrativa</a>
         </section>
     </div>
@@ -197,6 +205,6 @@
         </main>
     </div>
 
-    <script src="/portal.js"></script>
+    <script src="/portal.js?v=20261029-2"></script>
 </body>
 </html>

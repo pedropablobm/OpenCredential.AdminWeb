@@ -31,6 +31,41 @@ var environment = new TestEnvironment { ContentRootPath = root };
 var failures = 0;
 var count = 0;
 await Test("Politica y ciclo de vida invitado sin acceso real", () => { GuestAccessPolicyRegression.Run(); return Task.CompletedTask; });
+await Test("Configuracion del despliegue muestra TLS sin exponer credenciales", () =>
+{
+    var connection = new Npgsql.NpgsqlConnectionStringBuilder
+    {
+        Host = "db.example.invalid", Port = 5432, Database = "synthetic", Username = "test_user",
+        Password = "synthetic-only-secret;with-special-characters", SslMode = Npgsql.SslMode.VerifyFull,
+        RootCertificate = "/certs/synthetic-ca.crt"
+    };
+    var service = new DatabaseConfigurationService(Options.Create(new DatabaseOptions
+    {
+        Mode = "Sql", Provider = "PostgreSql", ConnectionString = connection.ConnectionString, AutoInitialize = false
+    }), environment);
+    var result = service.GetConfiguration();
+    Assert(result.ConnectionDetailsAvailable && result.Host == "db.example.invalid" && result.SslMode == "VerifyFull");
+    Assert(result.RootCertificateConfigured == true && result.RootCertificate == "/certs/synthetic-ca.crt" && !result.PasswordConfigured && !result.AutoInitialize);
+    Assert(!JsonSerializer.Serialize(result).Contains("synthetic-only-secret", StringComparison.Ordinal));
+    var mysqlConnection = new MySqlConnector.MySqlConnectionStringBuilder
+    {
+        Server = "mysql.example.invalid", Database = "synthetic", UserID = "test_user",
+        Password = "synthetic-mysql-only-secret", SslMode = MySqlConnector.MySqlSslMode.Required
+    };
+    var mysql = new DatabaseConfigurationService(Options.Create(new DatabaseOptions
+    {
+        Mode = "Sql", Provider = "MySql", ConnectionString = mysqlConnection.ConnectionString, AutoInitialize = false
+    }), environment).GetConfiguration();
+    Assert(mysql.ConnectionDetailsAvailable && mysql.Host == "mysql.example.invalid" && mysql.SslMode == "Required");
+    Assert(mysql.RootCertificateConfigured is null && !mysql.PasswordConfigured);
+    Assert(!JsonSerializer.Serialize(mysql).Contains("synthetic-mysql-only-secret", StringComparison.Ordinal));
+    var invalid = new DatabaseConfigurationService(Options.Create(new DatabaseOptions
+    {
+        Mode = "Sql", Provider = "PostgreSql", ConnectionString = "not a connection string"
+    }), environment).GetConfiguration();
+    Assert(!invalid.ConnectionDetailsAvailable && invalid.SslMode == "");
+    return Task.CompletedTask;
+});
 await Test("JSON conserva credenciales tras reinicio", () =>
 {
     var repository = new JsonAdminRepository(environment);

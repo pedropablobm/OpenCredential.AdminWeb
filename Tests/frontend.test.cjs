@@ -58,6 +58,37 @@ test("Una caida conserva datos, filtros y la fecha de la ultima carga valida", a
     assert.equal(sandbox.document.getElementById("retryDataBtn").disabled, false);
 });
 
+test("Un fallo de usuarios no impide actualizar el resumen", async () => {
+    const sandbox = loadContext(async url => {
+        if (url.startsWith('/api/users?')) return { ok: false, status: 500, json: async () => ({ title: 'Synthetic users error' }) };
+        return { ok: true, status: 200, json: async () => ({ marker: 'fresh' }) };
+    });
+    await sandbox.loadAll({ background: true });
+    assert.equal(vm.runInContext('state.snapshot.marker', sandbox), 'fresh');
+    assert.equal(vm.runInContext('state.dashboard.marker', sandbox), 'fresh');
+    assert.equal(vm.runInContext('state.dataStale', sandbox), false);
+    assert.equal(vm.runInContext('state.usersLoadFailed', sandbox), true);
+    assert.equal(sandbox.document.getElementById('dataConnectionStatus').dataset.status, 'partial');
+});
+
+test("Un reporte no disponible conserva resultados compatibles pero bloquea exportacion", async () => {
+    const sandbox = loadContext(async url => {
+        if (url.startsWith('/api/reports?')) return { ok: false, status: 500, json: async () => ({ title: 'Synthetic report error' }) };
+        if (url.startsWith('/api/users?')) return { ok: true, status: 200, json: async () => ({ items: [], page: 1 }) };
+        return { ok: true, status: 200, json: async () => ({ marker: 'fresh' }) };
+    });
+    vm.runInContext('state.currentView = "reports"; state.reports = { marker: "last-good" }; state.reportsQuery = buildReportsQuery();', sandbox);
+    await sandbox.loadAll({ background: true });
+    assert.equal(vm.runInContext('state.reports.marker', sandbox), 'last-good');
+    assert.equal(vm.runInContext('state.reportsLoadFailed', sandbox), true);
+    assert.equal(sandbox.document.getElementById('reportResults').hidden, false);
+    assert.equal(sandbox.document.getElementById('exportReportsCsvBtn').disabled, true);
+    sandbox.document.getElementById('reportOriginFilter').value = 'offline_cache';
+    sandbox.updateReportLoadStatus();
+    assert.equal(sandbox.document.getElementById('reportResults').hidden, true);
+    assert.equal(sandbox.document.getElementById('printReportsBtn').disabled, true);
+});
+
 test("El listado solicita pagina/filtros al servidor y el resumen usa modo compacto", async () => {
     const calls = [];
     const sandbox = loadContext(async url => {
@@ -92,6 +123,83 @@ test("Un 401 de una sesion antigua no cierra una sesion nueva", async () => {
     vm.runInContext('handleUnauthorized = () => { throw new Error("must-not-log-out-new-session"); };', sandbox);
     const pending = sandbox.fetchJson("/api/users");
     vm.runInContext('state.sessionEpoch++;', sandbox);
+    release();
+    await assert.rejects(pending, /AUTH_REQUIRED/);
+});
+
+test("Inicio muestra cuatro indicadores principales sin eliminar los secundarios", () => {
+    const sandbox = loadContext(async () => { throw new Error("unexpected fetch"); });
+    vm.runInContext(`
+        state.dashboard = { kpis: { availableComputers: 4, occupiedComputers: 2, orphanedComputers: 1,
+            activeUsers: 8, totalUsers: 10, lockedComputers: 1, disconnectedComputers: 2, disabledComputers: 3 } };
+        state.snapshot = {};
+        globalThis.cards = {};
+        getOperationalComputers = () => [];
+        renderKpiCards = (id, value) => { cards[id] = value; };
+        renderBars = () => {}; renderTrend = () => {}; renderOverviewEquipmentAlerts = () => {}; renderOverviewAudit = () => {};
+    `, sandbox);
+    sandbox.renderOverview();
+    assert.equal(sandbox.cards.overviewKpiCards.length, 4);
+    assert.equal(sandbox.cards.overviewExtraKpiCards.length, 4);
+    assert.equal(sandbox.cards.overviewKpiCards[2].value, 1);
+    assert.equal(sandbox.cards.overviewExtraKpiCards[1].value, 2);
+});
+
+test("La configuracion del despliegue no se presenta como SSL deshabilitado", async () => {
+    const sandbox = loadContext(async () => { throw new Error("unexpected fetch"); });
+    vm.runInContext(`
+        state.session = { authenticated: true, role: "SuperAdmin" };
+        fetchJson = async () => ({ sqlEnabled: true, provider: "PostgreSql", runtimeConfigurationExists: false,
+            connectionDetailsAvailable: true, host: "db.example.invalid", port: 5432, databaseName: "synthetic",
+            sslMode: "VerifyFull", rootCertificateConfigured: true, rootCertificate: "/certs/test-ca.crt", autoInitialize: false });
+    `, sandbox);
+    await sandbox.loadDatabaseConfiguration();
+    assert.equal(sandbox.document.getElementById("dbSslMode").value, "VerifyFull");
+    assert.equal(sandbox.document.getElementById("dbRootCertificate").value, "/certs/test-ca.crt");
+    assert.equal(sandbox.document.getElementById("dbRootCertificateField").hidden, false);
+    assert.equal(sandbox.document.getElementById("databaseConfigForm").dataset.deploymentManaged, "true");
+    assert.match(sandbox.document.getElementById("databaseConfigNotice").textContent, /sustituira esa configuracion/);
+    assert.match(sandbox.document.getElementById("databaseConfigSummary").textContent, /TLS configurado: VerifyFull/);
+    assert.match(sandbox.document.getElementById("databaseConfigSummary").textContent, /ruta de CA configurada \(sin comprobar\)/);
+    assert.equal(sandbox.document.getElementById("dbAutoInitialize").checked, false);
+});
+
+test("Filtros adicionales de reportes conservan su consulta y se indican al usuario", () => {
+    const sandbox = loadContext(async () => { throw new Error("unexpected fetch"); });
+    sandbox.document.getElementById("reportOriginFilter").value = "offline_cache";
+    sandbox.document.getElementById("reportUsernameFilter").value = "student";
+    sandbox.updateReportAdvancedFilterCount();
+    assert.equal(sandbox.document.getElementById("reportAdvancedFilterCount").textContent, "(2 activos)");
+    const query = new URLSearchParams(sandbox.buildReportsQuery());
+    assert.equal(query.get("sessionOrigin"), "offline_cache");
+    assert.equal(query.get("username"), "student");
+});
+
+test("Reportes conserva indicadores secundarios sin mostrarlos todos de inicio", () => {
+    const sandbox = loadContext(async () => { throw new Error("unexpected fetch"); });
+    vm.runInContext(`
+        state.reports = { kpis: { sessionCount: 4, totalHours: 3, uniqueUsers: 2, activePrograms: 1,
+            activeRooms: 1, offlineRecoveredSessions: 1, supersededSessions: 0, heartbeatTimeoutSessions: 2,
+            unexpectedShutdownSessions: 0 }, sessions: [], topUsers: [], topEquipment: [] };
+        globalThis.cards = {};
+        renderKpiCards = (id, values) => { cards[id] = values; };
+        renderBars = () => {}; renderPaginatedTable = () => {};
+    `, sandbox);
+    sandbox.renderReportsModule();
+    assert.equal(sandbox.cards.reportsKpiCards.length, 4);
+    assert.equal(sandbox.cards.reportsExtraKpis.length, 5);
+    assert.equal(sandbox.cards.reportsExtraKpis[3].value, 2);
+});
+
+test("Una respuesta 401 antigua del portal no cierra una sesion nueva", async () => {
+    let release;
+    const wait = new Promise(resolve => { release = resolve; });
+    const portalSource = fs.readFileSync(path.join(__dirname, "../wwwroot/portal.js"), "utf8").replace("initializePortal();", "");
+    const sandbox = vm.createContext({ fetch: async () => { await wait; return { status: 401 }; }, document: {}, console });
+    vm.runInContext(portalSource, sandbox);
+    vm.runInContext('applyPortalSession = () => { throw new Error("must-not-log-out-new-session"); };', sandbox);
+    const pending = sandbox.portalFetchJson('/api/portal/me');
+    vm.runInContext('portalState.sessionEpoch++;', sandbox);
     release();
     await assert.rejects(pending, /AUTH_REQUIRED/);
 });

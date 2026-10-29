@@ -48,7 +48,10 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
             AutoInitialize = fallback.AutoInitialize,
             RuntimeConfigurationExists = configured is not null,
             RequiresRestart = false,
-            PasswordConfigured = !string.IsNullOrWhiteSpace(fallback.Password)
+            PasswordConfigured = configured is not null && !string.IsNullOrWhiteSpace(configured.Password),
+            ConnectionDetailsAvailable = configured is not null || fallback.ConnectionDetailsAvailable,
+            RootCertificateConfigured = configured is null ? fallback.RootCertificateConfigured : !string.IsNullOrWhiteSpace(configured.RootCertificate),
+            RootCertificate = fallback.RootCertificate
         };
     }
 
@@ -154,6 +157,37 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
 
     private RuntimeDatabaseSetup ReadFromCurrentOptions()
     {
+        // Only return non-secret metadata. Do not reuse or expose the deployment password.
+        if (_currentOptions.Mode.Equals("sql", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(_currentOptions.ConnectionString))
+        {
+            try
+            {
+                if (NormalizeProvider(_currentOptions.Provider).Equals("MySql", StringComparison.OrdinalIgnoreCase))
+                {
+                    var mysql = new MySqlConnectionStringBuilder(_currentOptions.ConnectionString);
+                    return new RuntimeDatabaseSetup
+                    {
+                        Provider = "MySql", Host = mysql.Server, Port = checked((int)mysql.Port),
+                        DatabaseName = mysql.Database, Username = mysql.UserID, SslMode = mysql.SslMode.ToString(),
+                        AutoInitialize = _currentOptions.AutoInitialize, ConnectionDetailsAvailable = true
+                    };
+                }
+                var postgres = new NpgsqlConnectionStringBuilder(_currentOptions.ConnectionString);
+                return new RuntimeDatabaseSetup
+                {
+                    Provider = "PostgreSql", Host = postgres.Host ?? "", Port = postgres.Port,
+                    DatabaseName = postgres.Database ?? "", Username = postgres.Username ?? "",
+                    SslMode = postgres.SslMode.ToString(), AutoInitialize = _currentOptions.AutoInitialize,
+                    ConnectionDetailsAvailable = true, RootCertificateConfigured = !string.IsNullOrWhiteSpace(postgres.RootCertificate),
+                    RootCertificate = postgres.RootCertificate
+                };
+            }
+            catch (ArgumentException)
+            {
+                // Invalid configuration must not be described as an unencrypted active connection.
+            }
+        }
         return new RuntimeDatabaseSetup
         {
             Provider = NormalizeProvider(_currentOptions.Provider),
@@ -161,20 +195,25 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
             Port = _currentOptions.Provider.Equals("MySql", StringComparison.OrdinalIgnoreCase) ? 3306 : 5432,
             DatabaseName = "",
             Username = "",
-            SslMode = "Disable",
+            SslMode = "",
             AutoInitialize = _currentOptions.AutoInitialize
         };
     }
 
     private DatabaseConfigurationInput ResolvePassword(DatabaseConfigurationInput input)
     {
-        if (!string.IsNullOrWhiteSpace(input.Password))
+        if (!string.IsNullOrEmpty(input.Password))
         {
             return input;
         }
 
         var configured = LoadRuntimeSetup();
-        if (configured is null || string.IsNullOrWhiteSpace(configured.Password))
+        if (configured is null || string.IsNullOrEmpty(configured.Password) ||
+            !string.Equals(NormalizeProvider(input.Provider), NormalizeProvider(configured.Provider), StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(input.Host.Trim(), configured.Host.Trim(), StringComparison.OrdinalIgnoreCase) ||
+            input.Port != configured.Port ||
+            !string.Equals(input.DatabaseName.Trim(), configured.DatabaseName.Trim(), StringComparison.Ordinal) ||
+            !string.Equals(input.Username.Trim(), configured.Username.Trim(), StringComparison.Ordinal))
         {
             return input;
         }
@@ -188,6 +227,7 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
             Username = input.Username,
             Password = configured.Password,
             SslMode = input.SslMode,
+            RootCertificate = input.RootCertificate,
             AutoInitialize = input.AutoInitialize
         };
     }
@@ -211,6 +251,7 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
             DatabaseName = input.DatabaseName.Trim(),
             Username = input.Username.Trim(),
             SslMode = string.IsNullOrWhiteSpace(input.SslMode) ? "Disable" : input.SslMode.Trim(),
+            RootCertificate = string.IsNullOrWhiteSpace(input.RootCertificate) ? null : input.RootCertificate.Trim(),
             AutoInitialize = input.AutoInitialize,
             Password = input.Password ?? string.Empty
         };
@@ -226,7 +267,15 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
         }
 
         var sslMode = string.IsNullOrWhiteSpace(input.SslMode) ? "Disable" : input.SslMode.Trim();
-        return $"Host={input.Host.Trim()};Port={input.Port};Database={input.DatabaseName.Trim()};Username={input.Username.Trim()};Password={password};SSL Mode={sslMode};Include Error Detail=true";
+        if (!Enum.TryParse<SslMode>(sslMode, true, out var parsedSslMode) || !Enum.IsDefined(parsedSslMode))
+            throw new ArgumentException("Modo TLS de PostgreSQL no valido.");
+        var builder = new NpgsqlConnectionStringBuilder
+        {
+            Host = input.Host.Trim(), Port = input.Port, Database = input.DatabaseName.Trim(),
+            Username = input.Username.Trim(), Password = password, SslMode = parsedSslMode
+        };
+        if (!string.IsNullOrWhiteSpace(input.RootCertificate)) builder.RootCertificate = input.RootCertificate.Trim();
+        return builder.ConnectionString;
     }
 
     private static string NormalizeProvider(string? provider)
@@ -254,6 +303,9 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
         public string Username { get; init; } = "";
         public string Password { get; init; } = "";
         public string SslMode { get; init; } = "Disable";
+        public string? RootCertificate { get; init; }
         public bool AutoInitialize { get; init; } = true;
+        public bool ConnectionDetailsAvailable { get; init; }
+        public bool? RootCertificateConfigured { get; init; }
     }
 }

@@ -1301,17 +1301,93 @@ body.auth-required .skip-link { display: none; }
 .search-shell:focus-within { outline: 3px solid #174a93; outline-offset: 3px; }
 .connection-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.25rem; margin-bottom: 1rem; border: 1px solid #bdccdf; border-radius: 12px; background: #f3f7fc; color: #233b58; }
 .connection-banner p { margin: .2rem 0; }
-#dataConnectionStatus[data-status="stale"] { font-weight: 700; color: #862a15; }
+#dataConnectionStatus[data-status="stale"],
+#dataConnectionStatus[data-status="partial"] { font-weight: 700; color: #862a15; }
 .form-feedback { color: #862a15; padding: .75rem; border: 1px solid currentColor; border-radius: 6px; }
 .app-feedback { position: fixed; bottom: 1rem; left: 1rem; right: 1rem; z-index: 100; padding: 1rem; background: #fff; color: #862a15; border: 2px solid currentColor; }
 .drawer { overscroll-behavior: contain; }
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* Secondary dashboard information stays available without dominating the first view. */
+.overview-details {
+    margin: 1rem 0;
+    padding: 1rem 1.25rem;
+}
+
+.overview-details > summary,
+.config-sidecard > summary,
+.config-editor > summary,
+.map-explainer > summary,
+.form-options > summary,
+.report-filters > summary {
+    cursor: pointer;
+    font-weight: 700;
+    color: var(--primary);
+}
+
+.config-current {
+    padding: 0.8rem 1rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-soft);
+    color: var(--ink);
+    overflow-wrap: anywhere;
+}
+
+.config-editor > form {
+    margin-top: 1rem;
+}
+
+.report-filters {
+    margin-top: 1rem;
+}
+
+.report-advanced-grid {
+    padding-top: 1rem;
+}
+
+.import-review {
+    padding: 1rem;
+    border: 1px solid var(--line);
+}
+
+.import-review h4 {
+    margin: 0 0 0.5rem;
+}
+
+.import-review ul {
+    padding-left: 1.25rem;
+}
+
+.section-load-status:not(:empty) {
+    padding: 0.75rem 1rem;
+    border-left: 3px solid var(--warning);
+    background: var(--warning-soft);
+    color: var(--ink);
+}
+
+.form-options {
+    padding: 0.9rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+}
+
+.form-options[open] > label {
+    display: grid;
+    gap: 0.4rem;
+}
+
+.overview-details-content {
+    display: grid;
+    gap: 1rem;
+    padding-top: 1rem;
+}
 @media (forced-colors: active) {
     :where(button, a, input, select, textarea, [tabindex]):focus-visible, .search-shell:focus-within { outline-color: Highlight; }
     .connection-banner, .form-feedback { border-color: CanvasText; background: Canvas; color: CanvasText; }
-    #dataConnectionStatus[data-status="stale"] { color: CanvasText; }
+    #dataConnectionStatus[data-status="stale"], #dataConnectionStatus[data-status="partial"] { color: CanvasText; }
 }
 
 .drawer-backdrop {

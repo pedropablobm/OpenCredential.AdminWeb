@@ -25,7 +25,7 @@ internal static class HttpRegression
         if (databaseDown)
         {
             start.Environment["Database__Provider"] = "PostgreSql";
-            start.Environment["Database__ConnectionString"] = "Host=127.0.0.1;Port=1;Username=test;Database=unavailable;Timeout=1;CommandTimeout=1";
+            start.Environment["Database__ConnectionString"] = "Host=127.0.0.1;Port=1;Username=test;Password=synthetic-http-secret;Database=unavailable;SSL Mode=VerifyFull;Root Certificate=/synthetic/ca.crt;Timeout=1;CommandTimeout=1";
         }
         start.Environment["AdminAuth__Enabled"] = "true";
         if (trustedProxy) start.Environment["ForwardedHeaders__TrustedProxies__0"] = "127.0.0.1";
@@ -85,7 +85,15 @@ internal static class HttpRegression
             Assert((await admin.PostAsJsonAsync("/api/auth/login", new { username = "SuperAdmin", password })).IsSuccessStatusCode, "Login admin.");
             if (databaseDown)
             {
-                Assert((await admin.GetAsync("/api/configuration/database")).IsSuccessStatusCode, "Bootstrap permite recuperar configuracion con base caida.");
+                var config = await admin.GetFromJsonAsync<JsonElement>("/api/configuration/database");
+                Assert(config.GetProperty("connectionDetailsAvailable").GetBoolean() && config.GetProperty("sslMode").GetString() == "VerifyFull", "Bootstrap muestra TLS incluso con la base caida.");
+                Assert(config.GetProperty("rootCertificateConfigured").GetBoolean() && !config.GetProperty("passwordConfigured").GetBoolean(), "El certificado se indica sin reutilizar la clave del despliegue.");
+                Assert(config.GetProperty("rootCertificate").GetString() == "/synthetic/ca.crt", "La ruta publica de la CA se conserva para la interfaz autorizada.");
+                Assert(!config.ToString().Contains("synthetic-http-secret", StringComparison.Ordinal), "La respuesta no expone la clave de la base.");
+                using var readOnly = Client();
+                readOnly.DefaultRequestHeaders.Add("X-OpenCredential-Request", "1");
+                Assert((await readOnly.PostAsJsonAsync("/api/auth/login", new { username = "Operator", password })).IsSuccessStatusCode, "Operador inicia sesion con cuenta configurada.");
+                Assert((await readOnly.GetAsync("/api/configuration/database")).StatusCode == HttpStatusCode.Forbidden, "Los detalles de conexion siguen restringidos a SuperAdmin.");
                 Assert((await admin.GetAsync("/health/ready")).StatusCode == HttpStatusCode.ServiceUnavailable, "Readiness detecta base caida.");
                 return;
             }
