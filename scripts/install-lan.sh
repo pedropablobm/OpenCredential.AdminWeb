@@ -73,10 +73,11 @@ read -r -p 'Escribe SI para continuar: ' confirm
 "${compose[@]}" up -d --build
 echo 'Servicios iniciados. Verificando acceso HTTPS; esto no valida todos los permisos SQL.'
 if command -v curl >/dev/null; then
-    curl --fail --silent --show-error --cacert "$ca" "https://${server_name}:8443/health/ready" || {
+    status=$(curl --silent --show-error --noproxy '*' --output /dev/null --write-out '%{http_code}' --cacert "$ca" "https://${server_name}:8443/health/ready") || {
         echo 'No se pudo comprobar HTTPS/readiness; revisa el proxy y la base antes de usar el servicio.' >&2
         exit 1
     }
+    [[ "$status" == 200 ]] || fail "La comprobacion HTTPS/readiness devolvio HTTP $status, no 200."
 else
     echo 'Falta curl: verifica manualmente /health/ready antes de usar el servicio.' >&2
     exit 1
