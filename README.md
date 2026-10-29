@@ -246,11 +246,7 @@ Antes de desplegar: respaldar base y volumen de datos, probar TLS/SMTP instituci
 5. Usa `Probar conexion`.
 6. Usa `Ajustar tablas de AdminWeb` para crear o corregir las tablas auxiliares de la consola web sobre una base ya existente de OpenCredential.
 7. Si la conexion debe quedar persistida para los siguientes reinicios, usa `Guardar configuracion`.
-8. Reinicia el contenedor:
-
-```bash
-docker restart opencredential-adminweb
-```
+8. Reinicia exclusivamente el servicio correspondiente a tu instalacion, siguiendo la guia del Compose utilizado. No asumas que todos los despliegues usan el mismo nombre de contenedor.
 
 La configuracion se guarda en `/data/adminweb-runtime.json`, por eso es importante mantener montado el volumen `opencredential_adminweb_data:/data`.
 

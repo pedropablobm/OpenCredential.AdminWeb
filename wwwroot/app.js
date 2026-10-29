@@ -2271,7 +2271,7 @@ function bindForms() {
                 body: JSON.stringify(getDatabaseConfigPayload())
             });
             resultHost.textContent = result.requiresRestart
-                ? `${result.message} Ejecuta: docker restart opencredential-adminweb`
+                ? `${result.message} Reinicia el servicio correspondiente a esta instalacion siguiendo su guia de despliegue.`
                 : result.message;
             document.getElementById("dbPassword").placeholder = "Clave guardada. Escribela solo si quieres cambiarla";
             document.getElementById("dbPassword").required = false;

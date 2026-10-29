@@ -37,10 +37,12 @@ public sealed partial class SqlAdminRepository
             conditions.Add("(" + string.Join(" OR ", new[] { "username", "document_id", "email", "first_name", "last_name" }
                 .Select(column => $"LOWER(COALESCE({Quote(column)}, '')) LIKE @search ESCAPE '!'")) + ")");
         }
+        // Legacy PostgreSQL databases may store numeric status as varchar instead of integer.
+        var statusText = _isPostgreSql ? "CAST(status AS TEXT)" : "CAST(status AS CHAR)";
+        var activeCondition = $"TRIM({statusText}) = '1'";
         if (query.Status != null)
         {
-            conditions.Add(query.Status == "active" ? "status = @active" : "(status <> @active OR status IS NULL)");
-            parameters["@active"] = 1;
+            conditions.Add(query.Status == "active" ? activeCondition : $"({statusText} IS NULL OR NOT ({activeCondition}))");
         }
         if (query.CareerId.HasValue)
         {
@@ -53,7 +55,7 @@ public sealed partial class SqlAdminRepository
             foreach (var parameter in parameters) AddParameter(command, parameter.Key, parameter.Value);
         }
         int registered, active;
-        await using (var counts = Command($"SELECT COUNT(*), COALESCE(SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END), 0) FROM {Quote("users")}"))
+        await using (var counts = Command($"SELECT COUNT(*), COALESCE(SUM(CASE WHEN {activeCondition} THEN 1 ELSE 0 END), 0) FROM {Quote("users")}"))
         await using (var reader = await counts.ExecuteReaderAsync(cancellationToken))
         {
             await reader.ReadAsync(cancellationToken);

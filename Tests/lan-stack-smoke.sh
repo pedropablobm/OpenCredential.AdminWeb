@@ -28,6 +28,7 @@ for attempt in $(seq 1 40); do
   sleep 1
 done
 curl --fail --silent --show-error --cacert /test/ca/ca.crt https://127.0.0.1:8443/health/ready >/dev/null
+runuser -u postgres -- psql -p 5432 -d oc_test -v ON_ERROR_STOP=1 -c "ALTER TABLE users ALTER COLUMN status DROP DEFAULT, ALTER COLUMN status TYPE varchar(16) USING status::text, ALTER COLUMN status SET DEFAULT '1'; INSERT INTO users (id, username, status) VALUES (1001, 'synthetic_active', '1'), (1002, 'synthetic_inactive', '0');" >/dev/null
 status=$(curl --silent --output /dev/null --write-out '%{http_code}' --cacert /test/ca/ca.crt https://127.0.0.1:8443/api/summary)
 test "$status" = 401
 status=$(curl --silent --output /dev/null --dump-header /test/login.headers --cookie-jar /test/cookies \
@@ -39,4 +40,8 @@ grep -qi '^set-cookie:.*secure' /test/login.headers
 status=$(curl --silent --output /dev/null --write-out '%{http_code}' --cacert /test/ca/ca.crt \
   --cookie /test/cookies 'https://127.0.0.1:8443/api/summary?compact=true')
 test "$status" = 200
-echo 'PASS HTTPS proxy, PostgreSQL VerifyFull, readiness, login, Secure cookie and anonymous access denied.'
+curl --fail --silent --show-error --cacert /test/ca/ca.crt --cookie /test/cookies \
+  'https://127.0.0.1:8443/api/users?status=active' > /test/users.json
+grep -q 'synthetic_active' /test/users.json
+if grep -q 'synthetic_inactive' /test/users.json; then exit 1; fi
+echo 'PASS HTTPS, PostgreSQL VerifyFull, login and user paging with varchar status.'
