@@ -1,0 +1,7 @@
+**
+!scripts/
+!scripts/install-lan.sh
+!scripts/create-lan-config.py
+!scripts/sign-lan-certificate.py
+!Tests/
+!Tests/test_lan_installer.py

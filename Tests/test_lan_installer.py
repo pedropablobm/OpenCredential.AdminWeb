@@ -2,6 +2,8 @@
 import importlib.util
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import types
 import unittest
@@ -94,6 +96,113 @@ class SigningTests(unittest.TestCase):
                 self.assertFalse(Path("proxy-tls").exists())
             finally:
                 os.chdir(old)
+
+
+class ReadinessTests(unittest.TestCase):
+    def test_retry_loop_with_transient_and_permanent_responses(self):
+        bash = shutil.which("bash")
+        if os.name == "nt":
+            git_bash = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Git/bin/bash.exe"
+            bash = str(git_bash) if git_bash.exists() else None
+        if not bash:
+            self.skipTest("Bash is unavailable")
+        script = (source.parent / "install-lan.sh").read_text()
+        loop = script.split("    status=000\n", 1)[1].split("    if [[ \"$status\" != 200 ]]", 1)[0]
+        for responses, expected_status, expected_calls in [
+            ("502 503 200", "200", 3), ("401 200", "401", 1),
+            ("000", "000", 30), ("200", "200", 1),
+        ]:
+            with self.subTest(responses=responses), tempfile.TemporaryDirectory() as directory:
+                state = Path(directory) / "calls"
+                # The curl double maintains state in a file because command substitution runs in a subshell.
+                harness = '''
+state=$1; responses=$2; ca=synthetic; server_name=example.invalid
+curl() {
+  n=0; [[ ! -f "$state" ]] || read -r n < "$state"
+  n=$((n+1)); printf '%s' "$n" > "$state"
+  set -- $responses
+  for ((i=1; i<n && $#>1; i++)); do shift; done
+  printf '%s' "$1"
+  [[ "$1" != 000 ]]
+}
+sleep() { :; }
+status=000
+''' + loop + '''
+printf '%s ' "$status"; cat "$state"
+'''
+                result = subprocess.run([bash, "-c", harness, "test", str(state).replace("\\", "/"), responses],
+                                        text=True, capture_output=True, check=True)
+                self.assertEqual(result.stdout.strip(), f"{expected_status} {expected_calls}")
+
+
+class InstallerFlowTests(unittest.TestCase):
+    def test_simulated_installation_and_safe_stops(self):
+        bash = shutil.which("bash")
+        if os.name == "nt":
+            candidate = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Git/bin/bash.exe"
+            bash = str(candidate) if candidate.exists() else None
+        if not bash:
+            self.skipTest("Bash is unavailable")
+        cases = [
+            ("new", "example.invalid\n\nSI\nSI\n", 0, 2, "Acceso:"),
+            ("new", "example.invalid\n\nNO\n", 0, 0, "Cancelado"),
+            ("new", "example.invalid\n\nSI\nNO\n", 0, 1, "AdminWeb ya fue iniciado"),
+            ("orphan", "", 1, 0, "volumen AdminWeb"),
+            ("volume-error", "", 1, 0, "No se pudieron inspeccionar los volumenes"),
+            ("exec-error", "", 1, 0, "No se pudo inspeccionar"),
+            ("occupied", "example.invalid\n\n", 1, 0, "8443 ya esta ocupado"),
+            ("ss-error", "example.invalid\n\n", 1, 0, "No se pudo inspeccionar el puerto"),
+            ("network-error", "example.invalid\n\n", 1, 0, "No se pudieron inspeccionar las redes"),
+        ]
+        for mode, answers, code, ups, message in cases:
+            with self.subTest(mode=mode, answers=answers), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                (root / "scripts").mkdir()
+                (root / "proxy-tls").mkdir()
+                (root / "bin").mkdir()
+                # Only the interactive-terminal guard is disabled in this disposable copy.
+                script = (source.parent / "install-lan.sh").read_text().replace(
+                    "[[ -t 0 ]] || fail 'Se necesita una terminal interactiva.'", ": # test input")
+                (root / "scripts/install-lan.sh").write_text(script, newline="\n")
+                for name in ("adminweb.production.env", "postgres-ca.crt", "proxy-tls/server.crt", "proxy-tls/server.key"):
+                    (root / name).write_text("synthetic")
+                doubles = {
+                    "uname": "echo Linux",
+                    "ss": '[[ "$MODE" != ss-error ]] || exit 1; [[ "$MODE" != occupied ]] || echo listener; exit 0',
+                    "openssl": 'case "$1" in verify) exit 0;; dgst) cat >/dev/null; echo same;; pkey) if [[ "$2" == -pubin ]]; then cat >/dev/null; fi; echo data;; *) echo data;; esac',
+                    "curl": 'printf 200',
+                    "sleep": ':',
+                    "docker": '''
+case "$*" in
+  *" compose version"*|"compose version"|"info") exit 0;;
+  *"ps -aq adminweb"*) [[ "$MODE" != exec-error ]] || echo synthetic-container; exit 0;;
+  "inspect "*) echo true; exit 0;;
+  *"exec -T adminweb"*) exit 1;;
+  "volume ls "*) [[ "$MODE" != volume-error ]] || exit 1; [[ "$MODE" != orphan ]] || echo oc-admin-external_adminweb_external_data; exit 0;;
+  "network ls "*) [[ "$MODE" != network-error ]] || exit 1; [[ ! -f "$STATE" ]] || echo oc-admin-external_default; exit 0;;
+  "network inspect "*"--format"*) echo 172.18.0.1; exit 0;;
+  "network inspect "*) [[ -f "$STATE" ]]; exit $?;;
+  *" up -d --build"*) echo up >> "$LOG"; : > "$STATE"; exit 0;;
+  *"config --quiet"*) exit 0;;
+  *) echo "unexpected docker invocation" >&2; exit 1;;
+esac''',
+                }
+                for name, body in doubles.items():
+                    path = root / "bin" / name
+                    path.write_text("#!/usr/bin/env bash\n" + body + "\n", newline="\n")
+                    path.chmod(0o755)
+                env = dict(os.environ, MODE=mode, STATE=str(root / "network").replace("\\", "/"),
+                           LOG=str(root / "log").replace("\\", "/"))
+                launcher = 'p=$1; if command -v cygpath >/dev/null; then p=$(cygpath -u "$p"); fi; export PATH="$p/bin:$PATH"; bash "$p/scripts/install-lan.sh"'
+                result = subprocess.run([bash, "-c", launcher, "test", str(root).replace("\\", "/")],
+                                        input=answers.encode(), capture_output=True, env=env)
+                output = (result.stdout + result.stderr).decode(errors="replace")
+                self.assertEqual(result.returncode, code, output)
+                self.assertIn(message, output)
+                log = root / "log"
+                self.assertEqual(len(log.read_text().splitlines()) if log.exists() else 0, ups)
+                self.assertEqual((root / "adminweb.production.env").read_text(), "synthetic")
+                self.assertEqual((root / "proxy-tls/server.key").read_text(), "synthetic")
 
 
 if __name__ == "__main__":

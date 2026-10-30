@@ -17,6 +17,10 @@ docker network inspect oc-admin-external_default --format '{{range .IPAM.Config}
 
 Para una instalacion nueva, la red se crea al levantar primero el Compose externo. La puerta de enlace es un valor de ejemplo de la instalacion, no universal. Verifica que el origen visto por AdminWeb sea realmente esa puerta de enlace; depende del motor y de la red. No uses rangos amplios como proxies confiables. El proxy sobrescribe las cabeceras reenviadas, pero confiar en la puerta de enlace tambien implica confiar en procesos locales capaces de conectarse al puerto loopback; protege el host y el acceso a Docker.
 
+El instalador asistido `scripts/install-lan.sh` requiere Linux, Docker Compose, OpenSSL, `ss` y `curl`. Comprueba la disponibilidad de `curl` antes de iniciar servicios y espera hasta 30 intentos para readiness. Para una red nueva solicita una primera confirmacion y entonces inicia AdminWeb; cancelar la confirmacion posterior no revierte ese inicio. No elimina ni restaura datos. Un volumen existente sin contenedor asociado requiere inspeccion manual previa. El instalador no admite IPv6 y rechaza el puerto 8443 ocupado, incluso por un proxy AdminWeb existente: no lo uses como actualizador automatico de una instalacion en ejecucion. Sigue un procedimiento de actualizacion revisado y con respaldo, sin eliminar el proxy ni volumenes a ciegas.
+
+Para ejecutar las pruebas sinteticas del instalador en Linux mediante Docker, desde la raiz del repositorio usa `docker build -f Tests/lan-installer.Dockerfile -t opencredential-adminweb:installer-tests .`. Construye una imagen de prueba local; los comandos Docker, certificados y datos del instalador se simulan y no se conecta el socket del motor al contenedor. No sustituye una instalacion completa en un servidor Linux aislado.
+
 ## Arranque
 
 Despues de crear los certificados y verificar que el puerto esta libre, establece la puerta de enlace obtenida mediante inspeccion en tu sesion, sin editar el archivo privado. A continuacion, este comando **recrea AdminWeb si cambia su configuracion y crea el proxy**; no toca Apache ni borra el volumen:
