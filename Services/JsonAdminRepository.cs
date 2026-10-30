@@ -857,8 +857,12 @@ public sealed class JsonAdminRepository : IAdminRepository
                 var careerName = RepositorySupport.GetValue(values, map, "career", "carrera");
                 var semesterName = RepositorySupport.GetValue(values, map, "semester", "semestre", "level");
                 var active = RepositorySupport.ParseBoolean(RepositorySupport.GetValue(values, map, "active", "estado", "status"), true);
+                var password = RepositorySupport.GetValue(values, map, "password", "clave", "contrasena");
+                var hashMethod = PasswordHashService.NormalizeInteractiveMethod(RepositorySupport.GetValue(values, map, "hashmethod", "hash_method", "algoritmo"));
 
                 var existing = _snapshot.Users.FirstOrDefault(user => user.Username.Equals(username, StringComparison.OrdinalIgnoreCase));
+                if (existing is null && string.IsNullOrWhiteSpace(password))
+                    throw new InvalidOperationException($"Fila {i + 1}: los usuarios nuevos requieren una clave inicial.");
                 var careerId = EnsureCareer(careerName);
                 var semesterId = EnsureSemester(semesterName);
 
@@ -875,8 +879,8 @@ public sealed class JsonAdminRepository : IAdminRepository
                         CareerId = careerId,
                         SemesterId = semesterId,
                         Active = active,
-                        HashMethod = "BCRYPT",
-                        PasswordHash = PasswordHashService.HashPassword(PasswordHashService.GeneratePassword(), "BCRYPT"),
+                        HashMethod = hashMethod,
+                        PasswordHash = PasswordHashService.HashPassword(password, hashMethod),
                         FailedAttempts = 0
                     });
                     imported++;
@@ -890,10 +894,10 @@ public sealed class JsonAdminRepository : IAdminRepository
                     existing.CareerId = careerId;
                     existing.SemesterId = semesterId;
                     existing.Active = active;
-                    existing.HashMethod = existing.HashMethod ?? "BCRYPT";
-                    if (string.IsNullOrWhiteSpace(existing.PasswordHash))
+                    if (!string.IsNullOrWhiteSpace(password))
                     {
-                        existing.PasswordHash = PasswordHashService.HashPassword(PasswordHashService.GeneratePassword(), existing.HashMethod);
+                        existing.HashMethod = hashMethod;
+                        existing.PasswordHash = PasswordHashService.HashPassword(password, hashMethod);
                     }
                     updated++;
                 }

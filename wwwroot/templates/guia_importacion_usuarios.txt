@@ -23,7 +23,7 @@ username,firstName,lastName,email,documentId,career,semester,active,hashMethod,p
 - career: carrera o programa academico
 - semester: semestre o nivel
 - active: true/false, 1/0, si/no, activo/inactivo
-- hashMethod: BCRYPT, SHA512, SSHA512, SHA384, SSHA384, SHA256, SSHA256, SHA1, SSHA1, MD5, SMD5, NONE
+- hashMethod: las claves nuevas o modificadas se guardan con BCRYPT.
 - password: clave inicial en texto plano
 
 5. Alias reconocidos por la aplicacion
@@ -41,11 +41,14 @@ username,firstName,lastName,email,documentId,career,semester,active,hashMethod,p
 - Si career no existe, la aplicacion la crea.
 - Si semester no existe, la aplicacion la crea.
 - Si active no viene, se asume true.
-- Si hashMethod no viene, se usa BCRYPT.
+- Al crear o cambiar una clave se usa BCRYPT, aunque se indique otro algoritmo.
 - Si password no viene:
-  - en usuarios nuevos, la clave temporal queda con el valor de documentId
+  - en usuarios nuevos, la importacion se detiene: es obligatorio proporcionar una clave inicial
   - en usuarios existentes, no se cambia la clave actual
+- La importacion actual puede aplicar cambios parciales si ocurre un error; revisa los datos antes de reintentar.
+- El analizador actual no admite valores entre comillas con separadores o saltos de linea y elimina espacios al inicio y final de cada valor, incluidas las claves. No uses claves que dependan de esos espacios.
 
 7. Recomendacion operativa
-- Para produccion, preferir enviar password o usar una estrategia posterior de restablecimiento.
+- Usa claves iniciales seguras y gestiona el archivo como informacion sensible.
+- La plantilla deja la columna password vacia deliberadamente. Define una clave para cada usuario nuevo antes de importarla.
 - Guardar el archivo en UTF-8.

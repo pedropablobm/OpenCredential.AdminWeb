@@ -2298,3 +2298,22 @@ tbody tr:hover {
         padding: 0.65rem 0.85rem;
     }
 }
+.data-load-status {
+    padding: 0.75rem 1rem;
+    margin: 0 0 1rem;
+    border: 1px solid #a66b00;
+    border-radius: 0.5rem;
+    background: #fff4d6;
+    color: #493000;
+}
+.no-dashboard-data #overviewKpiCards,
+.no-dashboard-data #overviewSecondaryDetails,
+.no-dashboard-data #overviewDashboardCharts,
+.no-dashboard-data #overviewTrendChart,
+.no-snapshot-data #overviewActivityResults,
+.no-snapshot-data #usersView > :not(.module-head),
+.no-snapshot-data #equipmentView > :not(.module-head),
+.no-snapshot-data #academicView > :not(.module-head),
+.no-snapshot-data #auditView > :not(.module-head) {
+    display: none;
+}

@@ -10,8 +10,8 @@ root = Path(__file__).resolve().parent.parent
 html = (root / 'wwwroot/index.html').read_text(encoding='utf-8')
 css = (root / 'wwwroot/styles.css').read_text(encoding='utf-8')
 script = (root / 'wwwroot/app.js').read_text(encoding='utf-8').replace('\ninitializeApp();', '')
-html = html.replace('<link rel="stylesheet" href="/styles.css" />', '<style>' + css + '</style>')
-html = html.replace('<script src="/app.js?v=20260504-1"></script>', '')
+html = html.replace('<link rel="stylesheet" href="/styles.css?v=20261030-1" />', '<style>' + css + '</style>')
+html = html.replace('<script src="/app.js?v=20261030-1"></script>', '')
 
 with sync_playwright() as playwright:
     options = {'headless': True}
@@ -177,6 +177,7 @@ with sync_playwright() as playwright:
     page.evaluate('''() => {
         document.querySelectorAll('.module-view').forEach(node => node.classList.remove('is-active'));
         document.getElementById('importView').classList.add('is-active');
+        state.dataErrors.snapshot = false;
         window.importCalls = 0;
         window.fetch = async () => { window.importCalls++; return { ok: false }; };
     }''')
@@ -190,6 +191,9 @@ with sync_playwright() as playwright:
     expect(page.locator('#importResult')).to_contain_text('Algunas filas podrian haberse aplicado')
     assert page.locator('#userFile').evaluate('(node) => node.files.length') == 1
     assert page.locator('#importUsersBtn').is_enabled()
+    page.locator('#importUsersBtn').click()
+    expect(page.locator('#importResult')).to_contain_text('no estan actualizados')
+    page.evaluate('state.dataErrors.snapshot = false')  # Simula una recarga correcta antes de reintentar.
     page.evaluate("() => { window.fetch = async () => ({ ok: true, json: async () => ({ imported: 1, updated: 0, warnings: [] }) }); }")
     page.once('dialog', lambda dialog: dialog.accept())
     page.locator('#importUsersBtn').click()

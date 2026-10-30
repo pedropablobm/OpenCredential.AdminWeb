@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenCredential AdminWeb</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20261030-1" />
 </head>
 <body>
     <div class="auth-shell" id="authShell">
@@ -112,6 +112,8 @@
             </header>
 
             <div class="content-shell">
+                <p id="dataLoadStatus" role="status" aria-live="polite" class="data-load-status">Datos pendientes de actualizacion.</p>
+                <button type="button" class="btn btn-secondary" id="refreshDataBtn">Actualizar datos</button>
                 <section class="module-view is-active" id="overviewView">
                     <div class="hero-card card">
                         <div>
@@ -174,7 +176,7 @@
                         </div>
                     </section>
 
-                    <div class="overview-grid">
+                    <div class="overview-grid" id="overviewDashboardCharts">
                         <section class="card section-card">
                             <div class="section-head">
                                 <div>
@@ -196,7 +198,7 @@
                         </section>
                     </div>
 
-                    <section class="card section-card">
+                    <section class="card section-card" id="overviewTrendChart">
                         <div class="section-head">
                             <div>
                                 <p class="section-label">Tendencia</p>
@@ -207,7 +209,7 @@
                     </section>
                     </details>
 
-                    <div class="overview-grid">
+                    <div class="overview-grid" id="overviewActivityResults">
                         <section class="card section-card">
                             <div class="section-head">
                                 <div>
@@ -490,6 +492,7 @@
                         </details>
                     </section>
 
+                    <div id="reportsResults">
                     <div class="mini-kpi-grid" id="reportsKpiCards"></div>
 
                     <div class="overview-grid">
@@ -567,6 +570,7 @@
                         </div>
                         <div class="table-host" id="reportSessionsTable"></div>
                     </section>
+                    </div>
                 </section>
 
                 <section class="module-view" id="auditView">
@@ -1056,6 +1060,6 @@
         </form>
     </aside>
 
-    <script src="/app.js?v=20260504-1"></script>
+    <script src="/app.js?v=20261030-1"></script>
 </body>
 </html>

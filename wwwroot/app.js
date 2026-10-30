@@ -2,8 +2,17 @@ const state = {
     snapshot: null,
     dashboard: null,
     reports: null,
+    dashboardQuery: null,
+    reportsQuery: null,
+    reportsLoadFailed: true,
+    dataTimes: { snapshot: null, dashboard: null, reports: null },
+    dataErrors: { snapshot: true, dashboard: true, reports: true },
     session: null,
     isLoading: false,
+    reloadRequested: false,
+    sessionEpoch: 0,
+    dataRevision: 0,
+    writeInProgress: false,
     refreshHandle: null,
     currentView: "overview",
     currentEquipmentTab: "list",
@@ -42,7 +51,34 @@ const pageSizeByTable = {
 
 const autoRefreshIntervalMs = 20000;
 
+function beginDataWrite() {
+    if (!state.snapshot || state.dataErrors.snapshot || state.writeInProgress) {
+        throw new Error("Los datos no estan actualizados. Actualiza antes de modificar registros.");
+    }
+    state.writeInProgress = true;
+    state.dataRevision++;
+    state.dataErrors = { snapshot: true, dashboard: true, reports: true };
+    state.reportsLoadFailed = true;
+    updateDataLoadStatus();
+    return state.sessionEpoch;
+}
+
+function endDataWrite(epoch) {
+    if (epoch !== state.sessionEpoch) return;
+    state.writeInProgress = false;
+    if (state.reloadRequested && !state.isLoading && state.session?.authenticated) {
+        state.reloadRequested = false;
+        loadAll({ background: true }).catch(() => {});
+    }
+}
+
 async function fetchJson(url, options) {
+    const epoch = state.sessionEpoch;
+    const method = (options?.method || "GET").toUpperCase();
+    const writesData = ["POST", "PUT", "PATCH", "DELETE"].includes(method)
+        && !url.startsWith("/api/auth/") && !url.startsWith("/api/configuration/");
+    if (writesData) beginDataWrite();
+    try {
     const response = await fetch(url, {
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
@@ -50,7 +86,7 @@ async function fetchJson(url, options) {
     });
 
     if (response.status === 401) {
-        handleUnauthorized();
+        if (epoch === state.sessionEpoch) handleUnauthorized();
         throw new Error("AUTH_REQUIRED");
     }
 
@@ -73,53 +109,91 @@ async function fetchJson(url, options) {
         return null;
     }
 
-    return response.json();
+    return await response.json();
+    } finally {
+        if (writesData) endDataWrite(epoch);
+    }
 }
 
 async function loadAll(options = {}) {
-    if (state.isLoading) {
+    updateDataLoadStatus();
+    if (state.isLoading || state.writeInProgress) {
+        state.reloadRequested = true;
         return;
     }
 
     const { background = false } = options;
+    const epoch = state.sessionEpoch;
+    const revision = state.dataRevision;
+    const current = () => epoch === state.sessionEpoch && state.session?.authenticated;
+    const valid = () => current() && revision === state.dataRevision;
     state.isLoading = true;
 
-    if (!background) {
-        await loadDatabaseConfiguration();
-    }
-
     try {
+        if (!background) await loadDatabaseConfiguration();
+        if (!valid()) { if (current()) state.reloadRequested = true; return; }
         try {
-            state.snapshot = await fetchJson("/api/summary");
+            const snapshot = await fetchJson("/api/summary");
+            if (!valid()) { if (current()) state.reloadRequested = true; return; }
+            state.snapshot = snapshot;
+            state.dataTimes.snapshot = new Date();
+            state.dataErrors.snapshot = false;
         } catch (error) {
+            if (!valid()) { if (current()) state.reloadRequested = true; return; }
+            state.dataErrors.snapshot = true;
             showDataLoadError(error);
-            state.snapshot = createEmptySnapshot();
         }
 
+        const dashboardQuery = buildDashboardQuery();
         try {
-            state.dashboard = await fetchJson(`/api/dashboard?${buildDashboardQuery()}`);
+            const dashboard = await fetchJson(`/api/dashboard?${dashboardQuery}`);
+            if (!valid()) { if (current()) state.reloadRequested = true; return; }
+            state.dashboard = dashboard;
+            state.dashboardQuery = dashboardQuery;
+            state.dataTimes.dashboard = new Date();
+            state.dataErrors.dashboard = false;
         } catch (error) {
+            if (!valid()) { if (current()) state.reloadRequested = true; return; }
+            state.dataErrors.dashboard = true;
             showDataLoadError(error);
-            state.dashboard = createEmptyDashboard();
         }
 
+        const reportsQuery = buildReportsQuery();
         try {
-            state.reports = await fetchJson(`/api/reports?${buildReportsQuery()}`);
+            const reports = await fetchJson(`/api/reports?${reportsQuery}`);
+            if (!valid()) { if (current()) state.reloadRequested = true; return; }
+            state.reports = reports;
+            state.reportsQuery = reportsQuery;
+            state.reportsLoadFailed = false;
+            state.dataTimes.reports = new Date();
+            state.dataErrors.reports = false;
         } catch (error) {
+            if (!valid()) { if (current()) state.reloadRequested = true; return; }
+            state.reportsLoadFailed = true;
+            state.dataErrors.reports = true;
             showDataLoadError(error);
-            state.reports = createEmptyReports();
         }
 
-        populateSelects(state.snapshot);
+        if (state.snapshot) populateSelects(state.snapshot);
         renderApp();
+        updateDataLoadStatus();
+        if (dashboardQuery !== buildDashboardQuery() || reportsQuery !== buildReportsQuery()) state.reloadRequested = true;
     } finally {
-        state.isLoading = false;
+        if (epoch === state.sessionEpoch) {
+            state.isLoading = false;
+            if (state.reloadRequested && !state.writeInProgress && state.session?.authenticated) {
+                state.reloadRequested = false;
+                await loadAll({ background: true });
+            }
+        }
     }
 }
 
 async function loadDatabaseConfiguration() {
+    const epoch = state.sessionEpoch;
     try {
         const config = await fetchJson("/api/configuration/database");
+        if (epoch !== state.sessionEpoch) return;
         if (document.getElementById("databaseConfigForm").dataset.dirty === "true") return;
         document.getElementById("dbProvider").value = config.provider || "PostgreSql";
         document.getElementById("dbHost").value = config.host || "";
@@ -154,6 +228,7 @@ async function loadDatabaseConfiguration() {
             ? `SQL ${config.provider}`
             : "JSON local";
     } catch (error) {
+        if (epoch !== state.sessionEpoch) return;
         if (error.message === "FORBIDDEN") {
             document.getElementById("databaseConfigResult").textContent = "Tu rol no permite ver esta configuracion.";
             document.getElementById("databaseConfigSummary").textContent = "Tu rol no permite ver esta configuracion.";
@@ -163,6 +238,25 @@ async function loadDatabaseConfiguration() {
         document.getElementById("databaseConfigResult").textContent = `No fue posible cargar la configuracion: ${error.message}`;
         document.getElementById("databaseConfigSummary").textContent = "No fue posible cargar la configuracion de la base.";
     }
+}
+
+function updateDataLoadStatus() {
+    if (typeof document === "undefined") return;
+    const host = document.getElementById("dataLoadStatus");
+    if (!host) return;
+    const labels = { snapshot: "Resumen", dashboard: "Dashboard", reports: "Reportes" };
+    host.textContent = Object.keys(labels).map(key => {
+        const time = state.dataTimes[key];
+        const mismatch = key === "dashboard" ? state.dashboardQuery !== buildDashboardQuery()
+            : key === "reports" ? state.reportsQuery !== buildReportsQuery() : false;
+        const status = !time ? "sin datos disponibles" : mismatch ? "pendiente para los filtros actuales" : state.dataErrors[key] ? "desactualizado" : "actualizado";
+        return `${labels[key]}: ${status}${time ? ` (${time.toLocaleString("es-CO")})` : ""}`;
+    }).join(" · ");
+    const results = document.getElementById("reportsResults");
+    if (results) results.hidden = !state.reports || state.reportsQuery !== buildReportsQuery();
+    document.body.classList.toggle("no-snapshot-data", !state.snapshot);
+    const dashboardReady = !!state.dashboard && state.dashboardQuery === buildDashboardQuery();
+    document.body.classList.toggle("no-dashboard-data", !dashboardReady);
 }
 
 function syncDatabaseTlsFields() {
@@ -443,7 +537,16 @@ function renderReportSessionState(item) {
         : stateLabel;
 }
 
+function reportsAreCurrent() {
+    if (!state.reports || state.reportsLoadFailed || state.reportsQuery !== buildReportsQuery()) {
+        window.alert("Los reportes no estan actualizados para los filtros actuales. Actualiza los datos antes de exportar.");
+        return false;
+    }
+    return true;
+}
+
 function exportReportsCsv() {
+    if (!reportsAreCurrent()) return;
     const reports = state.reports ?? createEmptyReports();
     if (!(reports.sessions ?? []).length) {
         window.alert("No hay sesiones para exportar con los filtros actuales.");
@@ -496,6 +599,7 @@ function exportReportsCsv() {
 }
 
 async function exportReportsPdf() {
+    if (!reportsAreCurrent()) return;
     const reports = state.reports ?? createEmptyReports();
     if (!(reports.sessions ?? []).length) {
         window.alert("No hay sesiones para exportar con los filtros actuales.");
@@ -1752,6 +1856,22 @@ function updateTopbarDate() {
 }
 
 function applySession(session) {
+    state.sessionEpoch++;
+    state.snapshot = null;
+    state.dashboard = null;
+    state.reports = null;
+    state.dashboardQuery = null;
+    state.reportsQuery = null;
+    state.reportsLoadFailed = true;
+    state.dataTimes = { snapshot: null, dashboard: null, reports: null };
+    state.dataErrors = { snapshot: true, dashboard: true, reports: true };
+    state.isLoading = false;
+    state.reloadRequested = false;
+    state.writeInProgress = false;
+    state.dataRevision++;
+    state.layoutDraft = null;
+    state.selectedRoomId = null;
+    state.selectedRoomPositionId = null;
     state.session = session;
     const authShell = document.getElementById("authShell");
     const pageShell = document.querySelector(".page-shell");
@@ -1759,6 +1879,8 @@ function applySession(session) {
     document.body.classList.toggle("auth-required", !session?.authenticated);
     authShell.classList.toggle("is-visible", !session?.authenticated);
     pageShell.classList.toggle("is-hidden", !session?.authenticated);
+    if (!session?.authenticated) closeDrawers();
+    updateDataLoadStatus();
     updateSessionChrome();
     syncAutoRefresh();
 }
@@ -2031,6 +2153,7 @@ function updateGlobalSearchPlaceholder() {
 }
 
 function bindForms() {
+    document.getElementById("refreshDataBtn").addEventListener("click", () => loadAll({ background: true }).catch(() => {}));
     document.getElementById("loginForm").addEventListener("submit", async event => {
         event.preventDefault();
         const resultHost = document.getElementById("loginResult");
@@ -2329,6 +2452,10 @@ function bindForms() {
 
     document.getElementById("importForm").addEventListener("submit", async event => {
         event.preventDefault();
+        if (!state.snapshot || state.dataErrors.snapshot) {
+            document.getElementById("importResult").textContent = "Los datos no estan actualizados. Actualiza antes de importar.";
+            return;
+        }
         const fileInput = document.getElementById("userFile");
         if (!fileInput.files.length) {
             return;
@@ -2341,6 +2468,14 @@ function bindForms() {
         const resultHost = document.getElementById("importResult");
         button.disabled = true;
         resultHost.textContent = "Importando usuarios...";
+        let writeEpoch;
+        try {
+            writeEpoch = beginDataWrite();
+        } catch (error) {
+            resultHost.textContent = error.message;
+            button.disabled = false;
+            return;
+        }
         let result;
         try {
             const response = await fetch("/api/import/users", { method: "POST", body: formData });
@@ -2351,6 +2486,7 @@ function bindForms() {
             resultHost.textContent = "No se pudo confirmar el resultado. Algunas filas podrian haberse aplicado; revisa los usuarios antes de volver a importar. El archivo sigue seleccionado.";
             return;
         } finally {
+            endDataWrite(writeEpoch);
             button.disabled = false;
         }
         resultHost.textContent = `Importados: ${result.imported}. Actualizados: ${result.updated}. ${result.warnings.length ? result.warnings.join(" | ") : "Sin advertencias."}`;
@@ -2699,6 +2835,7 @@ function initializeReportFilters() {
 
 let debounceHandle = null;
 function debounceLoadAll() {
+    updateDataLoadStatus();
     clearTimeout(debounceHandle);
     debounceHandle = setTimeout(() => {
         loadAll().catch(() => {});
