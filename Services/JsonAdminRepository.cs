@@ -226,7 +226,7 @@ public sealed class JsonAdminRepository : IAdminRepository
 
             var method = PasswordHashService.NormalizeInteractiveMethod(hashMethod);
             user.HashMethod = method;
-            user.PasswordHash = PasswordHashService.HashPassword(plainPassword.Trim(), method);
+            user.PasswordHash = PasswordHashService.HashPassword(plainPassword, method);
             user.FailedAttempts = 0;
             user.LockedUntilUtc = null;
             SaveSnapshot();
@@ -236,7 +236,7 @@ public sealed class JsonAdminRepository : IAdminRepository
                 UserId = user.Id,
                 Username = user.Username,
                 HashMethod = method,
-                GeneratedPassword = plainPassword.Trim()
+                GeneratedPassword = plainPassword
             };
         }
     }
@@ -331,7 +331,7 @@ public sealed class JsonAdminRepository : IAdminRepository
 
             var method = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
             user.HashMethod = method;
-            user.PasswordHash = PasswordHashService.HashPassword(input.NewPassword.Trim(), method);
+            user.PasswordHash = PasswordHashService.HashPassword(input.NewPassword, method);
             user.FailedAttempts = 0;
             user.LockedUntilUtc = null;
             tokenRecord.ConsumedUtc = DateTime.UtcNow;
@@ -719,7 +719,7 @@ public sealed class JsonAdminRepository : IAdminRepository
                 SemesterId = input.SemesterId,
                 Active = input.Active,
                 HashMethod = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod),
-                PasswordHash = PasswordHashService.HashPassword(input.Password.Trim(), PasswordHashService.NormalizeInteractiveMethod(input.HashMethod)),
+                PasswordHash = PasswordHashService.HashPassword(input.Password, PasswordHashService.NormalizeInteractiveMethod(input.HashMethod)),
                 Groups = ResolveGroups(input.GroupIds)
             };
 
@@ -743,11 +743,11 @@ public sealed class JsonAdminRepository : IAdminRepository
             user.CareerId = input.CareerId;
             user.SemesterId = input.SemesterId;
             user.Active = input.Active;
-            user.HashMethod = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
             user.Groups = ResolveGroups(input.GroupIds);
             if (!string.IsNullOrWhiteSpace(input.Password))
             {
-                user.PasswordHash = PasswordHashService.HashPassword(input.Password.Trim(), PasswordHashService.NormalizeInteractiveMethod(input.HashMethod));
+                user.HashMethod = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
+                user.PasswordHash = PasswordHashService.HashPassword(input.Password, PasswordHashService.NormalizeInteractiveMethod(input.HashMethod));
             }
             SaveSnapshot();
             return user;
@@ -776,7 +776,7 @@ public sealed class JsonAdminRepository : IAdminRepository
             var method = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
             var plainPassword = input.Generate || string.IsNullOrWhiteSpace(input.Password)
                 ? PasswordHashService.GeneratePassword()
-                : input.Password.Trim();
+                : input.Password;
 
             user.HashMethod = method;
             user.PasswordHash = PasswordHashService.HashPassword(plainPassword, method);

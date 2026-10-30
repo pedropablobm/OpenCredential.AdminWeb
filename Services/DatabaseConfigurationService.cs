@@ -220,11 +220,21 @@ public sealed class DatabaseConfigurationService : IDatabaseConfigurationService
         var password = input.Password ?? string.Empty;
         if (provider.Equals("MySql", StringComparison.OrdinalIgnoreCase))
         {
-            return $"Server={input.Host.Trim()};Port={input.Port};Database={input.DatabaseName.Trim()};User ID={input.Username.Trim()};Password={password};";
+            return new MySqlConnectionStringBuilder
+            {
+                Server = input.Host.Trim(), Port = checked((uint)input.Port), Database = input.DatabaseName.Trim(),
+                UserID = input.Username.Trim(), Password = password
+            }.ConnectionString;
         }
 
         var sslMode = string.IsNullOrWhiteSpace(input.SslMode) ? "Disable" : input.SslMode.Trim();
-        return $"Host={input.Host.Trim()};Port={input.Port};Database={input.DatabaseName.Trim()};Username={input.Username.Trim()};Password={password};SSL Mode={sslMode};Include Error Detail=true";
+        if (!Enum.TryParse<SslMode>(sslMode, true, out var parsedSslMode) || !Enum.IsDefined(parsedSslMode))
+            throw new ArgumentException("Modo TLS de PostgreSQL no valido.");
+        return new NpgsqlConnectionStringBuilder
+        {
+            Host = input.Host.Trim(), Port = input.Port, Database = input.DatabaseName.Trim(),
+            Username = input.Username.Trim(), Password = password, SslMode = parsedSslMode
+        }.ConnectionString;
     }
 
     private static string NormalizeProvider(string? provider)

@@ -9,3 +9,10 @@ App_Data/*
 *.log
 .dotnet-home/
 artifacts/
+.env
+.env.*
+!.env.example
+keys/
+adminweb.production.env
+postgres-ca.crt
+proxy-tls/

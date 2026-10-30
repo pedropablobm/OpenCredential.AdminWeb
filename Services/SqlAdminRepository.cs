@@ -358,7 +358,7 @@ public sealed class SqlAdminRepository : IAdminRepository
         var method = PasswordHashService.NormalizeInteractiveMethod(hashMethod);
         using var update = CreateCommand(connection, $"UPDATE {Quote("users")} SET hash_method = @hashMethod, password_hash = @passwordHash, failed_attempts = 0, locked_until = NULL WHERE LOWER(username) = LOWER(@username)");
         AddParameter(update, "@hashMethod", method);
-        AddParameter(update, "@passwordHash", PasswordHashService.HashPassword(plainPassword.Trim(), method));
+        AddParameter(update, "@passwordHash", PasswordHashService.HashPassword(plainPassword, method));
         AddParameter(update, "@username", normalizedUsername);
         update.ExecuteNonQuery();
 
@@ -367,7 +367,7 @@ public sealed class SqlAdminRepository : IAdminRepository
             UserId = user.Id,
             Username = user.Username,
             HashMethod = method,
-            GeneratedPassword = plainPassword.Trim()
+            GeneratedPassword = plainPassword
         };
     }
 
@@ -514,7 +514,7 @@ public sealed class SqlAdminRepository : IAdminRepository
             return false;
         }
 
-        var result = UpdatePasswordByUsername(user.Username, input.NewPassword.Trim(), input.HashMethod);
+        var result = UpdatePasswordByUsername(user.Username, input.NewPassword, input.HashMethod);
         if (result is null)
         {
             message = "No fue posible actualizar la clave.";
@@ -1118,7 +1118,7 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             AddParameter(command, "@levelId", (object?)input.SemesterId ?? DBNull.Value);
             var method = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
             AddParameter(command, "@hashMethod", method);
-            AddParameter(command, "@passwordHash", PasswordHashService.HashPassword(input.Password.Trim(), method));
+            AddParameter(command, "@passwordHash", PasswordHashService.HashPassword(input.Password, method));
             command.ExecuteNonQuery();
         }
 
@@ -1145,7 +1145,7 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
         using var connection = OpenConnection();
         var previousUsername = LoadUsernameByUserId(connection, id);
         var sql = string.IsNullOrWhiteSpace(input.Password)
-            ? $"UPDATE {Quote("users")} SET username = @username, first_name = @firstName, last_name = @lastName, document_id = @documentId, email = @email, status = @status, career_id = @careerId, level_id = @levelId, hash_method = @hashMethod WHERE id = @id"
+            ? $"UPDATE {Quote("users")} SET username = @username, first_name = @firstName, last_name = @lastName, document_id = @documentId, email = @email, status = @status, career_id = @careerId, level_id = @levelId WHERE id = @id"
             : $"UPDATE {Quote("users")} SET username = @username, first_name = @firstName, last_name = @lastName, document_id = @documentId, email = @email, status = @status, career_id = @careerId, level_id = @levelId, hash_method = @hashMethod, password_hash = @passwordHash WHERE id = @id";
 
         var parameters = new List<(string Name, object Value)>
@@ -1158,12 +1158,12 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             ("@email", input.Email.Trim()),
             ("@status", ToStatus(input.Active)),
             ("@careerId", (object?)input.CareerId ?? DBNull.Value),
-            ("@levelId", (object?)input.SemesterId ?? DBNull.Value),
-            ("@hashMethod", PasswordHashService.NormalizeInteractiveMethod(input.HashMethod))
+            ("@levelId", (object?)input.SemesterId ?? DBNull.Value)
         };
         if (!string.IsNullOrWhiteSpace(input.Password))
         {
-            parameters.Add(("@passwordHash", PasswordHashService.HashPassword(input.Password.Trim(), PasswordHashService.NormalizeInteractiveMethod(input.HashMethod))));
+            parameters.Add(("@hashMethod", PasswordHashService.NormalizeInteractiveMethod(input.HashMethod)));
+            parameters.Add(("@passwordHash", PasswordHashService.HashPassword(input.Password, PasswordHashService.NormalizeInteractiveMethod(input.HashMethod))));
         }
 
         using var command = CreateCommand(connection, sql);
@@ -1185,6 +1185,10 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             .OrderBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        using var hashMethodCommand = CreateCommand(connection, $"SELECT hash_method FROM {Quote("users")} WHERE id = @id");
+        AddParameter(hashMethodCommand, "@id", id);
+        var savedHashMethod = Convert.ToString(hashMethodCommand.ExecuteScalar()) ?? "NONE";
+
         return new UserAccount
         {
             Id = id,
@@ -1196,7 +1200,7 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
             CareerId = input.CareerId,
             SemesterId = input.SemesterId,
             Active = input.Active,
-            HashMethod = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod),
+            HashMethod = savedHashMethod,
             Groups = groups
         };
     }
@@ -1232,7 +1236,7 @@ ORDER BY ls.loginstamp DESC, ls.dbid DESC");
         var method = PasswordHashService.NormalizeInteractiveMethod(input.HashMethod);
         var plainPassword = input.Generate || string.IsNullOrWhiteSpace(input.Password)
             ? PasswordHashService.GeneratePassword()
-            : input.Password.Trim();
+            : input.Password;
 
         using var update = CreateCommand(connection, $"UPDATE {Quote("users")} SET hash_method = @hashMethod, password_hash = @passwordHash, failed_attempts = 0, locked_until = NULL WHERE id = @id");
         AddParameter(update, "@id", id);
