@@ -120,6 +120,7 @@ async function loadAll(options = {}) {
 async function loadDatabaseConfiguration() {
     try {
         const config = await fetchJson("/api/configuration/database");
+        if (document.getElementById("databaseConfigForm").dataset.dirty === "true") return;
         document.getElementById("dbProvider").value = config.provider || "PostgreSql";
         document.getElementById("dbHost").value = config.host || "";
         document.getElementById("dbPort").value = config.port || (config.provider === "MySql" ? 3306 : 5432);
@@ -130,10 +131,24 @@ async function loadDatabaseConfiguration() {
             ? "Clave guardada. Escribela solo si quieres cambiarla"
             : "Clave de base de datos";
         document.getElementById("dbPassword").required = !config.passwordConfigured;
-        document.getElementById("dbSslMode").value = config.sslMode || "Disable";
+        document.getElementById("dbSslMode").value = config.sslMode || "";
+        document.getElementById("dbRootCertificate").value = config.rootCertificate || "";
+        syncDatabaseTlsFields();
         document.getElementById("dbAutoInitialize").checked = config.autoInitialize !== false;
+        const summary = document.getElementById("databaseConfigSummary");
+        if (!config.sqlEnabled) {
+            summary.textContent = "Almacenamiento actual: JSON local.";
+        } else if (!config.connectionDetailsAvailable) {
+            summary.textContent = "Conexion SQL configurada; sus detalles no estan disponibles.";
+        } else {
+            const source = config.runtimeConfigurationExists ? "Configuracion guardada (puede requerir reinicio)" : "Configuracion del despliegue";
+            const automatic = config.autoInitialize ? " · inicializacion automatica activada" : "";
+            summary.textContent = `${source}: ${config.provider} · ${config.host || "Servidor no indicado"}:${config.port} · ${config.databaseName || "Base no indicada"} · TLS configurado: ${config.sslMode || "no disponible"}${automatic}.`;
+        }
         document.getElementById("databaseConfigResult").textContent = config.sqlEnabled
-            ? `Modo actual: SQL (${config.provider}).`
+            ? (config.runtimeConfigurationExists
+                ? `Configuracion guardada: ${config.provider}, TLS ${config.sslMode || "no disponible"}. Puede requerir reinicio.`
+                : `Configuracion del despliegue: ${config.provider}, TLS ${config.sslMode || "no disponible"}. Guardar la sustituye tras reiniciar.`)
             : "Modo actual: JSON local. Guarda una configuracion SQL y reinicia el contenedor para usar la base externa.";
         document.getElementById("sidebarDatabaseMode").textContent = config.sqlEnabled
             ? `SQL ${config.provider}`
@@ -141,11 +156,23 @@ async function loadDatabaseConfiguration() {
     } catch (error) {
         if (error.message === "FORBIDDEN") {
             document.getElementById("databaseConfigResult").textContent = "Tu rol no permite ver esta configuracion.";
+            document.getElementById("databaseConfigSummary").textContent = "Tu rol no permite ver esta configuracion.";
             return;
         }
 
         document.getElementById("databaseConfigResult").textContent = `No fue posible cargar la configuracion: ${error.message}`;
+        document.getElementById("databaseConfigSummary").textContent = "No fue posible cargar la configuracion de la base.";
     }
+}
+
+function syncDatabaseTlsFields() {
+    const postgres = document.getElementById("dbProvider").value === "PostgreSql";
+    const ssl = document.getElementById("dbSslMode");
+    ssl.disabled = !postgres;
+    document.getElementById("dbRootCertificateField").hidden = !postgres || !["VerifyCA", "VerifyFull"].includes(ssl.value);
+    document.getElementById("dbTlsNote").textContent = postgres
+        ? "VerifyFull verifica la CA y el nombre o IP del servidor. La clave guardada solo se reutiliza para el mismo destino."
+        : "El formulario no configura TLS de MySQL; usa la configuracion de despliegue para establecer TLS verificado.";
 }
 
 function buildDashboardQuery() {
@@ -186,6 +213,20 @@ function buildReportsQuery() {
     return params.toString();
 }
 
+function updateReportAdvancedCount() {
+    const ids = ["reportSemesterFilter", "reportGroupFilter", "reportUsernameFilter", "reportOriginFilter", "reportSessionStateFilter"];
+    const count = ids.filter(id => document.getElementById(id).value.trim() !== "").length;
+    document.getElementById("reportAdvancedCount").textContent = `(${count} ${count === 1 ? "activo" : "activos"})`;
+}
+
+function updateOverviewFilterCount() {
+    const count = ["careerFilter", "semesterFilter", "statusFilter"].filter(id => document.getElementById(id).value !== "").length +
+        (document.getElementById("rangeDays").value !== "30" ? 1 : 0);
+    document.getElementById("overviewFilterCount").textContent = count
+        ? `(${count} ${count === 1 ? "filtro activo" : "filtros activos"})`
+        : "(sin filtros adicionales)";
+}
+
 function populateSelects(snapshot) {
     fillOptions(document.getElementById("careerFilter"), snapshot.careers, "Todas las carreras");
     fillOptions(document.getElementById("semesterFilter"), snapshot.semesters, "Todos los semestres");
@@ -195,6 +236,8 @@ function populateSelects(snapshot) {
     fillOptions(document.getElementById("reportCareerFilter"), snapshot.careers, "Todas las carreras");
     fillOptions(document.getElementById("reportSemesterFilter"), snapshot.semesters, "Todos los semestres");
     fillOptions(document.getElementById("reportGroupFilter"), snapshot.groups ?? [], "Todos los grupos");
+    updateReportAdvancedCount();
+    updateOverviewFilterCount();
     fillOptions(document.getElementById("roomSelector"), snapshot.rooms, "Selecciona una sala");
     ensureSelectedRoom(snapshot.rooms);
 }
@@ -494,7 +537,9 @@ function renderOverview() {
         { label: "Usuarios activos", value: `${kpis.activeUsers}/${kpis.totalUsers}`, note: "Estado de cuentas registradas", tone: "neutral" },
         { label: "Equipos disponibles", value: kpis.availableComputers, note: "Listos para uso en sala", tone: "success" },
         { label: "Ocupados", value: kpis.occupiedComputers, note: "Sesion activa confirmada", tone: "warning" },
-        { label: "Bloqueados", value: kpis.lockedComputers, note: "Sesion bloqueada con presencia", tone: "info" },
+        { label: "Bloqueados", value: kpis.lockedComputers, note: "Sesion bloqueada con presencia", tone: "info" }
+    ]);
+    renderKpiCards("overviewSecondaryCards", [
         { label: "Desconectados", value: kpis.disconnectedComputers, note: "Sesion separada del cliente", tone: "slate" },
         { label: "Huerfanas", value: kpis.orphanedComputers, note: "Requieren revision operativa", tone: "danger" },
         { label: "Offline recuperadas", value: recoveredOfflineCount, note: "Equipos activos sincronizados desde cache", tone: "info" },
@@ -1739,6 +1784,11 @@ function syncAutoRefresh() {
 
 function handleUnauthorized() {
     applySession(null);
+    const form = document.getElementById("databaseConfigForm");
+    form.reset();
+    delete form.dataset.dirty;
+    document.getElementById("databaseEditor").open = false;
+    document.getElementById("databaseConfigSummary").textContent = "Cargando configuracion de la base...";
     document.getElementById("loginResult").textContent = "Inicia sesion para continuar.";
 }
 
@@ -1763,7 +1813,14 @@ function resetUserForm() {
     document.getElementById("userId").value = "";
     document.getElementById("userPassword").value = "";
     document.getElementById("passwordActionResult").textContent = "";
+    document.getElementById("userFormResult").textContent = "";
     document.getElementById("userDrawerTitle").textContent = "Nuevo usuario";
+    document.getElementById("userAcademicSection").open = false;
+    document.getElementById("userPasswordSection").open = true;
+    document.getElementById("userPasswordSummary").textContent = "Clave inicial";
+    document.getElementById("userPasswordHint").textContent = "La clave inicial es obligatoria para crear un usuario.";
+    document.getElementById("userPassword").required = true;
+    document.getElementById("resetPasswordBtn").hidden = true;
     renderUserGroupSelector([]);
 }
 
@@ -1771,6 +1828,19 @@ function resetComputerForm() {
     document.getElementById("computerForm").reset();
     document.getElementById("computerId").value = "";
     document.getElementById("computerDrawerTitle").textContent = "Nuevo equipo";
+    document.getElementById("computerExtraFields").open = false;
+    updateComputerExtraSummary();
+}
+
+function updateComputerExtraSummary() {
+    const hasExtra = ["computerIpAddress", "computerCurrentUser"].some(id => document.getElementById(id).value.trim());
+    document.getElementById("computerExtraSummary").textContent = hasExtra ? "Datos adicionales (configurados)" : "Datos adicionales";
+}
+
+function updateRoomSizeSummary() {
+    const width = document.getElementById("roomCanvasWidth").value || "—";
+    const height = document.getElementById("roomCanvasHeight").value || "—";
+    document.getElementById("roomSizeSummary").textContent = `Tamano del plano: ${width} × ${height}`;
 }
 
 function resetRoomForm() {
@@ -1779,6 +1849,8 @@ function resetRoomForm() {
     document.getElementById("roomCanvasWidth").value = 1200;
     document.getElementById("roomCanvasHeight").value = 720;
     document.getElementById("roomDrawerTitle").textContent = "Nueva sala";
+    document.getElementById("roomSizeFields").open = false;
+    updateRoomSizeSummary();
 }
 
 function resetCareerForm() {
@@ -1801,6 +1873,8 @@ function editRoom(item) {
     document.getElementById("roomCanvasWidth").value = item.canvasWidth;
     document.getElementById("roomCanvasHeight").value = item.canvasHeight;
     document.getElementById("roomActive").checked = item.active;
+    document.getElementById("roomSizeFields").open = false;
+    updateRoomSizeSummary();
     openDrawer("roomDrawer");
 }
 
@@ -1832,7 +1906,14 @@ function editUser(item) {
     document.getElementById("userSemester").value = item.semesterId || "";
     document.getElementById("userHashMethod").value = item.hashMethod || "BCRYPT";
     document.getElementById("userPassword").value = "";
+    document.getElementById("userPassword").required = false;
+    document.getElementById("userAcademicSection").open = false;
+    document.getElementById("userPasswordSection").open = false;
+    document.getElementById("userPasswordSummary").textContent = "Cambiar o restablecer clave";
+    document.getElementById("userPasswordHint").textContent = "Dejala vacia para conservar la clave actual al guardar el usuario.";
+    document.getElementById("resetPasswordBtn").hidden = false;
     document.getElementById("passwordActionResult").textContent = "";
+    document.getElementById("userFormResult").textContent = "";
     document.getElementById("userActive").checked = item.active;
     renderUserGroupSelector((item.groups || []).map(group => group.id));
     openDrawer("userDrawer");
@@ -1847,6 +1928,8 @@ function editComputer(item) {
     document.getElementById("computerIpAddress").value = item.ipAddress || "";
     document.getElementById("computerStatus").value = item.status;
     document.getElementById("computerCurrentUser").value = item.currentUsername || "";
+    document.getElementById("computerExtraFields").open = false;
+    updateComputerExtraSummary();
     openDrawer("computerDrawer");
 }
 
@@ -1983,7 +2066,20 @@ function bindForms() {
 
     document.getElementById("dbProvider").addEventListener("change", () => {
         document.getElementById("dbPort").value = document.getElementById("dbProvider").value === "MySql" ? 3306 : 5432;
+        syncDatabaseTlsFields();
     });
+    document.getElementById("dbSslMode").addEventListener("change", syncDatabaseTlsFields);
+    ["input", "change"].forEach(eventName => document.getElementById("databaseConfigForm").addEventListener(eventName, () => {
+        document.getElementById("databaseConfigForm").dataset.dirty = "true";
+    }));
+    document.getElementById("userPassword").addEventListener("invalid", () => {
+        document.getElementById("userPasswordSection").open = true;
+    });
+    ["roomCanvasWidth", "roomCanvasHeight"].forEach(id => {
+        document.getElementById(id).addEventListener("input", updateRoomSizeSummary);
+        document.getElementById(id).addEventListener("invalid", () => { document.getElementById("roomSizeFields").open = true; });
+    });
+    ["computerIpAddress", "computerCurrentUser"].forEach(id => document.getElementById(id).addEventListener("input", updateComputerExtraSummary));
 
     document.getElementById("testDatabaseBtn").addEventListener("click", async () => {
         const form = document.getElementById("databaseConfigForm");
@@ -2011,6 +2107,8 @@ function bindForms() {
             return;
         }
 
+        if (!window.confirm("Ajustar tablas puede modificar la base de datos. Confirma que tienes respaldo y deseas continuar.")) return;
+
         resultHost.textContent = "Ajustando tablas auxiliares de AdminWeb...";
         try {
             const result = await fetchJson("/api/configuration/database/schema", {
@@ -2026,6 +2124,8 @@ function bindForms() {
     document.getElementById("databaseConfigForm").addEventListener("submit", async event => {
         event.preventDefault();
         const resultHost = document.getElementById("databaseConfigResult");
+        if (document.getElementById("dbAutoInitialize").checked && !window.confirm("La inicializacion automatica puede modificar tablas al reiniciar. ¿Continuar?")) return;
+        if (document.getElementById("dbProvider").value === "PostgreSql" && document.getElementById("dbSslMode").value === "Disable" && !window.confirm("TLS deshabilitado transmite datos sin cifrar. ¿Continuar?")) return;
         resultHost.textContent = "Guardando configuracion...";
         try {
             const result = await fetchJson("/api/configuration/database", {
@@ -2035,8 +2135,11 @@ function bindForms() {
             resultHost.textContent = result.requiresRestart
                 ? `${result.message} Ejecuta: docker restart opencredential-adminweb`
                 : result.message;
-            document.getElementById("dbPassword").placeholder = "Clave guardada. Escribela solo si quieres cambiarla";
-            document.getElementById("dbPassword").required = false;
+            if (result.success) {
+                document.getElementById("dbPassword").value = "";
+                document.getElementById("dbPassword").placeholder = "Clave guardada. Escribela solo si quieres cambiarla";
+                document.getElementById("dbPassword").required = false;
+            }
         } catch (error) {
             resultHost.textContent = `No fue posible guardar la configuracion: ${error.message}`;
         }
@@ -2119,10 +2222,21 @@ function bindForms() {
             groupIds: getSelectedUserGroupIds(),
             active: document.getElementById("userActive").checked
         };
-        await fetchJson(id ? `/api/users/${id}` : "/api/users", {
-            method: id ? "PUT" : "POST",
-            body: JSON.stringify(payload)
-        });
+        const saveButton = document.getElementById("saveUserBtn");
+        const resultHost = document.getElementById("userFormResult");
+        saveButton.disabled = true;
+        resultHost.textContent = "Guardando usuario...";
+        try {
+            await fetchJson(id ? `/api/users/${id}` : "/api/users", {
+                method: id ? "PUT" : "POST",
+                body: JSON.stringify(payload)
+            });
+        } catch (error) {
+            resultHost.textContent = "No fue posible guardar el usuario. Revisa los datos y vuelve a intentarlo.";
+            return;
+        } finally {
+            saveButton.disabled = false;
+        }
         resetUserForm();
         closeDrawers();
         await loadAll();
@@ -2220,24 +2334,38 @@ function bindForms() {
             return;
         }
 
+        if (!window.confirm("La importacion puede crear o actualizar usuarios y aplicar cambios parciales. ¿Deseas continuar?")) return;
         const formData = new FormData();
         formData.append("file", fileInput.files[0]);
-
-        const response = await fetch("/api/import/users", {
-            method: "POST",
-            body: formData
-        });
-        const result = await response.json();
-        document.getElementById("importResult").textContent =
-            `Importados: ${result.imported}. Actualizados: ${result.updated}. ${result.warnings.length ? result.warnings.join(" | ") : "Sin advertencias."}`;
+        const button = document.getElementById("importUsersBtn");
+        const resultHost = document.getElementById("importResult");
+        button.disabled = true;
+        resultHost.textContent = "Importando usuarios...";
+        let result;
+        try {
+            const response = await fetch("/api/import/users", { method: "POST", body: formData });
+            if (!response.ok) throw new Error("IMPORT_FAILED");
+            result = await response.json();
+            if (!Number.isInteger(result.imported) || !Number.isInteger(result.updated) || !Array.isArray(result.warnings)) throw new Error("INVALID_RESPONSE");
+        } catch (error) {
+            resultHost.textContent = "No se pudo confirmar el resultado. Algunas filas podrian haberse aplicado; revisa los usuarios antes de volver a importar. El archivo sigue seleccionado.";
+            return;
+        } finally {
+            button.disabled = false;
+        }
+        resultHost.textContent = `Importados: ${result.imported}. Actualizados: ${result.updated}. ${result.warnings.length ? result.warnings.join(" | ") : "Sin advertencias."}`;
         event.target.reset();
-        await loadAll();
+        try { await loadAll(); }
+        catch { resultHost.textContent += " No se pudo actualizar la vista; recargala antes de continuar."; }
     });
 
     document.getElementById("rangeDays").addEventListener("change", loadAll);
     document.getElementById("careerFilter").addEventListener("change", loadAll);
     document.getElementById("semesterFilter").addEventListener("change", loadAll);
     document.getElementById("statusFilter").addEventListener("change", loadAll);
+    ["rangeDays", "careerFilter", "semesterFilter", "statusFilter"].forEach(id => {
+        document.getElementById(id).addEventListener("change", updateOverviewFilterCount);
+    });
     document.getElementById("reportFromDate").addEventListener("change", loadAll);
     document.getElementById("reportToDate").addEventListener("change", loadAll);
     document.getElementById("reportCareerFilter").addEventListener("change", loadAll);
@@ -2246,6 +2374,10 @@ function bindForms() {
     document.getElementById("reportOriginFilter").addEventListener("change", loadAll);
     document.getElementById("reportSessionStateFilter").addEventListener("change", loadAll);
     document.getElementById("reportUsernameFilter").addEventListener("input", debounceLoadAll);
+    ["reportSemesterFilter", "reportGroupFilter", "reportOriginFilter", "reportSessionStateFilter"].forEach(id => {
+        document.getElementById(id).addEventListener("change", updateReportAdvancedCount);
+    });
+    document.getElementById("reportUsernameFilter").addEventListener("input", updateReportAdvancedCount);
 
     document.getElementById("userSearch").addEventListener("input", event => {
         state.filters.users.query = event.target.value.trim().toLowerCase();
@@ -2313,6 +2445,7 @@ function bindForms() {
             renderAcademicModule();
         } else if (state.currentView === "reports") {
             document.getElementById("reportUsernameFilter").value = event.target.value;
+            updateReportAdvancedCount();
             debounceLoadAll();
         } else if (state.currentView === "audit") {
             state.filters.audit.query = value;
@@ -2436,6 +2569,9 @@ function getDatabaseConfigPayload() {
         username: document.getElementById("dbUsername").value,
         password: document.getElementById("dbPassword").value,
         sslMode: document.getElementById("dbSslMode").value,
+        rootCertificate: document.getElementById("dbProvider").value === "PostgreSql" &&
+            ["VerifyCA", "VerifyFull"].includes(document.getElementById("dbSslMode").value)
+            ? document.getElementById("dbRootCertificate").value : null,
         autoInitialize: document.getElementById("dbAutoInitialize").checked
     };
 }

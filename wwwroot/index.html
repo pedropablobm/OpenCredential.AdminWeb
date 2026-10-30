@@ -117,10 +117,7 @@
                         <div>
                             <p class="breadcrumb">Inicio / Overview</p>
                             <h2>Estado general del laboratorio y la administracion</h2>
-                            <p class="section-copy">
-                                La portada queda enfocada en resumen operativo, tendencias y alertas, sin mezclar
-                                catalogos, formularios tecnicos y tablas largas en la misma vista.
-                            </p>
+                            <p class="section-copy">Consulta el estado de los usuarios y equipos, y revisa las alertas recientes.</p>
                         </div>
                         <div class="hero-actions">
                             <button type="button" class="btn btn-primary" id="quickNewUserBtn">Nuevo usuario</button>
@@ -130,7 +127,13 @@
                     </div>
 
                     <div class="kpi-grid" id="overviewKpiCards"></div>
+                    <details class="form-disclosure overview-details" id="overviewSecondaryDetails">
+                        <summary>Ver mas indicadores</summary>
+                        <div class="kpi-grid disclosure-content" id="overviewSecondaryCards"></div>
+                    </details>
 
+                    <details class="form-disclosure overview-details" id="overviewTrendsDetails">
+                    <summary>Filtros y tendencias <span id="overviewFilterCount" aria-live="polite">(sin filtros adicionales)</span></summary>
                     <section class="card section-card">
                         <div class="section-head">
                             <div>
@@ -202,6 +205,7 @@
                         </div>
                         <div class="trend-chart" id="dailyUsageTrend"></div>
                     </section>
+                    </details>
 
                     <div class="overview-grid">
                         <section class="card section-card">
@@ -399,17 +403,18 @@
                         <div class="import-dropzone">
                             <div>
                                 <h3>Archivo plano de usuarios</h3>
-                                <p class="section-copy">Formato esperado: <code>username</code>, <code>firstName</code>, <code>lastName</code>, <code>email</code>, <code>documentId</code>, <code>career</code>, <code>semester</code>, <code>active</code>, <code>hashMethod</code> y <code>password</code>. Si no envias <code>password</code>, los usuarios nuevos quedan con el documento como clave temporal.</p>
+                                <p class="section-copy">Descarga la plantilla para preparar los datos. Los usuarios nuevos requieren una clave inicial; si editas uno existente sin enviar clave, se conserva la actual. Una importacion puede aplicar cambios antes de informar un error.</p>
                                 <div class="import-resources">
                                     <a class="btn btn-secondary" href="/templates/plantilla_usuarios_opencredential.csv" download>Descargar plantilla CSV</a>
                                     <a class="btn btn-secondary" href="/templates/guia_importacion_usuarios.txt" download>Descargar guia de columnas</a>
                                 </div>
                             </div>
                             <form id="importForm" class="stack-form">
+                                <label for="userFile">Archivo de usuarios</label>
                                 <input type="file" id="userFile" name="file" accept=".csv,.txt,.tsv" required />
-                                <button type="submit" class="btn btn-primary">Importar usuarios</button>
+                                <button type="submit" class="btn btn-primary" id="importUsersBtn">Importar usuarios</button>
                             </form>
-                            <p class="support-text" id="importResult"></p>
+                            <p class="support-text" id="importResult" role="status" aria-live="polite"></p>
                         </div>
                     </section>
                 </section>
@@ -447,6 +452,10 @@
                                 Carrera
                                 <select id="reportCareerFilter"></select>
                             </label>
+                        </div>
+                        <details class="form-disclosure report-advanced" id="reportAdvancedFilters">
+                            <summary>Mas filtros <span id="reportAdvancedCount" aria-live="polite">(0 activos)</span></summary>
+                            <div class="filter-grid disclosure-content">
                             <label>
                                 Semestre
                                 <select id="reportSemesterFilter"></select>
@@ -477,7 +486,8 @@
                                     <option value="ended">Finalizada</option>
                                 </select>
                             </label>
-                        </div>
+                            </div>
+                        </details>
                     </section>
 
                     <div class="mini-kpi-grid" id="reportsKpiCards"></div>
@@ -595,6 +605,9 @@
                                 <h3>PostgreSQL o MySQL</h3>
                             </div>
                         </div>
+                        <p class="config-summary" id="databaseConfigSummary" role="status" aria-live="polite">Cargando configuracion de la base...</p>
+                        <details class="form-disclosure" id="databaseEditor">
+                        <summary>Editar o probar conexion</summary>
                         <form id="databaseConfigForm" class="drawer-form">
                             <div class="config-layout">
                                 <section class="config-panel">
@@ -633,20 +646,26 @@
                                         </label>
                                         <label>
                                             SSL
-                                            <select id="dbSslMode">
+                                            <select id="dbSslMode" required>
+                                                <option value="">Selecciona un modo TLS</option>
                                                 <option value="Disable">SSL deshabilitado</option>
                                                 <option value="Prefer">SSL preferido</option>
                                                 <option value="Require">SSL requerido</option>
+                                                <option value="VerifyCA">Verificar CA</option>
+                                                <option value="VerifyFull">Verificar CA y servidor</option>
                                             </select>
                                         </label>
-                                        <label class="toggle-card">
-                                            <input type="checkbox" id="dbAutoInitialize" checked />
-                                            <span>Crear o actualizar tablas automaticamente al iniciar</span>
+                                        <label id="dbRootCertificateField" hidden>
+                                            CA publica (ruta dentro de AdminWeb)
+                                            <input type="text" id="dbRootCertificate" placeholder="/certs/postgres-ca.crt" />
+                                            <span class="support-text">La CA debe estar montada dentro del contenedor. Deja vacio para usar las CA del sistema.</span>
                                         </label>
+                                        <p class="support-text" id="dbTlsNote"></p>
                                     </div>
                                 </section>
 
-                                <aside class="config-sidecard">
+                                <details class="config-sidecard">
+                                    <summary>Ayuda y opciones avanzadas</summary>
                                     <div class="config-callout">
                                         <strong>Esquema complementario de la consola</strong>
                                         <p>
@@ -677,15 +696,20 @@
                                             </div>
                                         </div>
                                     </div>
-                                </aside>
+                                    <label class="toggle-card">
+                                        <input type="checkbox" id="dbAutoInitialize" />
+                                        <span>Crear o actualizar tablas automaticamente al iniciar</span>
+                                    </label>
+                                    <button type="button" class="btn btn-secondary" id="applySchemaBtn">Ajustar tablas de AdminWeb</button>
+                                </details>
                             </div>
                             <div class="drawer-actions config-actions">
                                 <button type="button" class="btn btn-secondary" id="testDatabaseBtn">Probar conexion</button>
-                                <button type="button" class="btn btn-secondary" id="applySchemaBtn">Ajustar tablas de AdminWeb</button>
                                 <button type="submit" class="btn btn-primary">Guardar configuracion</button>
                             </div>
-                            <p class="support-text config-result" id="databaseConfigResult"></p>
+                            <p class="support-text config-result" id="databaseConfigResult" role="status" aria-live="polite"></p>
                         </form>
+                        </details>
                     </section>
                 </section>
             </div>
@@ -700,7 +724,7 @@
                 <p class="section-label">Usuarios</p>
                 <h3 id="userDrawerTitle">Nuevo usuario</h3>
             </div>
-            <button type="button" class="icon-close" data-close-drawer="userDrawer">×</button>
+            <button type="button" class="icon-close" data-close-drawer="userDrawer" aria-label="Cerrar formulario de usuario">×</button>
         </div>
         <form id="userForm" class="drawer-form">
             <input type="hidden" id="userId" />
@@ -725,6 +749,10 @@
                     Correo institucional
                     <input type="email" id="userEmail" placeholder="Correo institucional" required />
                 </label>
+            </div>
+            <details class="form-disclosure" id="userAcademicSection">
+                <summary>Datos academicos y grupos</summary>
+                <div class="form-grid two-columns disclosure-content">
                 <label>
                     Carrera
                     <select id="userCareer"></select>
@@ -733,6 +761,14 @@
                     Semestre
                     <select id="userSemester"></select>
                 </label>
+                <div class="full-span">
+                    <span class="field-label">Grupos</span>
+                    <div id="userGroupsSelector" class="group-selector"></div>
+                    <p class="support-text">Los grupos determinan el acceso y ayudan a clasificar reportes.</p>
+                </div>
+                </div>
+            </details>
+            <div hidden>
                 <label>
                     Algoritmo hash
                     <select id="userHashMethod">
@@ -750,20 +786,23 @@
                         <option value="NONE">NONE</option>
                     </select>
                 </label>
+            </div>
+            <details class="form-disclosure" id="userPasswordSection" open>
+                <summary id="userPasswordSummary">Clave inicial</summary>
+                <div class="disclosure-content">
                 <label>
                     Clave
-                    <input type="password" id="userPassword" placeholder="Clave del usuario" />
+                    <input type="password" id="userPassword" placeholder="Clave del usuario" autocomplete="new-password" />
                 </label>
-                <div class="full-span">
-                    <span class="field-label">Grupos</span>
-                    <div id="userGroupsSelector" class="group-selector"></div>
-                    <p class="support-text">Usa los grupos de OpenCredential para permitir o restringir acceso a la aplicacion y para clasificar reportes.</p>
-                </div>
-                <div class="inline-actions full-span">
+                <p class="support-text" id="userPasswordHint">La clave inicial es obligatoria para crear un usuario.</p>
+                <div class="inline-actions">
                     <button type="button" class="btn btn-secondary" id="generatePasswordBtn">Generar segura</button>
                     <button type="button" class="btn btn-secondary" id="resetPasswordBtn">Restablecer clave</button>
                 </div>
-                <p class="support-text full-span" id="passwordActionResult"></p>
+                <p class="support-text" id="passwordActionResult" role="status" aria-live="polite"></p>
+                </div>
+            </details>
+            <div class="form-grid two-columns">
                 <label class="toggle-card full-span">
                     <input type="checkbox" id="userActive" checked />
                     <span>Usuario activo</span>
@@ -771,8 +810,9 @@
             </div>
             <div class="drawer-actions">
                 <button type="button" class="btn btn-secondary" data-close-drawer="userDrawer">Cancelar</button>
-                <button type="submit" class="btn btn-primary">Guardar usuario</button>
+                <button type="submit" class="btn btn-primary" id="saveUserBtn">Guardar usuario</button>
             </div>
+            <p class="support-text" id="userFormResult" role="status" aria-live="polite"></p>
         </form>
     </aside>
 
@@ -782,7 +822,7 @@
                 <p class="section-label">Equipos</p>
                 <h3 id="computerDrawerTitle">Nuevo equipo</h3>
             </div>
-            <button type="button" class="icon-close" data-close-drawer="computerDrawer">×</button>
+            <button type="button" class="icon-close" data-close-drawer="computerDrawer" aria-label="Cerrar formulario de equipo">×</button>
         </div>
         <form id="computerForm" class="drawer-form">
             <input type="hidden" id="computerId" />
@@ -800,10 +840,6 @@
                     <input type="text" id="computerLocation" placeholder="Ubicacion" required />
                 </label>
                 <label>
-                    Direccion IP
-                    <input type="text" id="computerIpAddress" placeholder="Direccion IP" />
-                </label>
-                <label>
                     Estado
                     <select id="computerStatus">
                         <option value="Available">Disponible</option>
@@ -811,11 +847,20 @@
                         <option value="Disabled">Deshabilitado</option>
                     </select>
                 </label>
-                <label class="full-span">
+            </div>
+            <details class="form-disclosure" id="computerExtraFields">
+                <summary id="computerExtraSummary">Datos adicionales</summary>
+                <div class="form-grid two-columns disclosure-content">
+                <label>
+                    Direccion IP
+                    <input type="text" id="computerIpAddress" placeholder="Direccion IP" />
+                </label>
+                <label>
                     Usuario actual (opcional)
                     <input type="text" id="computerCurrentUser" placeholder="Usuario actual" />
                 </label>
-            </div>
+                </div>
+            </details>
             <div class="drawer-actions">
                 <button type="button" class="btn btn-secondary" data-close-drawer="computerDrawer">Cancelar</button>
                 <button type="submit" class="btn btn-primary">Guardar equipo</button>
@@ -829,7 +874,7 @@
                 <p class="section-label">Salas</p>
                 <h3 id="roomDrawerTitle">Nueva sala</h3>
             </div>
-            <button type="button" class="icon-close" data-close-drawer="roomDrawer">×</button>
+            <button type="button" class="icon-close" data-close-drawer="roomDrawer" aria-label="Cerrar formulario de sala">×</button>
         </div>
         <form id="roomForm" class="drawer-form">
             <input type="hidden" id="roomId" />
@@ -842,19 +887,24 @@
                     Codigo corto
                     <input type="text" id="roomCode" placeholder="Ej. LAB-A" required />
                 </label>
-                <label>
-                    Ancho del plano
-                    <input type="number" id="roomCanvasWidth" min="640" max="4000" step="10" value="1200" required />
-                </label>
-                <label>
-                    Alto del plano
-                    <input type="number" id="roomCanvasHeight" min="360" max="2400" step="10" value="720" required />
-                </label>
                 <label class="toggle-card full-span">
                     <input type="checkbox" id="roomActive" checked />
                     <span>Sala activa</span>
                 </label>
             </div>
+            <details class="form-disclosure" id="roomSizeFields">
+                <summary id="roomSizeSummary">Tamano del plano: 1200 × 720</summary>
+                <div class="form-grid two-columns disclosure-content">
+                    <label>
+                        Ancho del plano
+                        <input type="number" id="roomCanvasWidth" min="640" max="4000" step="10" value="1200" required />
+                    </label>
+                    <label>
+                        Alto del plano
+                        <input type="number" id="roomCanvasHeight" min="360" max="2400" step="10" value="720" required />
+                    </label>
+                </div>
+            </details>
             <div class="drawer-actions">
                 <button type="button" class="btn btn-secondary" data-close-drawer="roomDrawer">Cancelar</button>
                 <button type="submit" class="btn btn-primary">Guardar sala</button>

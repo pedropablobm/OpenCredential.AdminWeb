@@ -3,6 +3,7 @@ using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 using MySqlConnector;
 using Npgsql;
+using System.Text.Json;
 using OpenCredential.AdminWeb;
 using OpenCredential.AdminWeb.Services;
 
@@ -28,6 +29,19 @@ await using (var admin = new MySqlConnection(new MySqlConnectionStringBuilder
 var root = Path.Combine(Path.GetTempPath(), "oc-config-test-" + Guid.NewGuid().ToString("N"));
 Environment.SetEnvironmentVariable("ADMINWEB_DATA_DIR", root);
 var service = new DatabaseConfigurationService(Options.Create(new DatabaseOptions()), new TestEnvironment { ContentRootPath = root });
+var deploymentConnection = new NpgsqlConnectionStringBuilder
+{
+    Host = "db.example.invalid", Database = "synthetic", Username = "test-user", Password = "synthetic-deployment-secret",
+    SslMode = SslMode.VerifyFull, RootCertificate = "/certs/synthetic-ca.crt"
+};
+var deploymentService = new DatabaseConfigurationService(Options.Create(new DatabaseOptions
+{
+    Mode = "Sql", Provider = "PostgreSql", ConnectionString = deploymentConnection.ConnectionString, AutoInitialize = false
+}), new TestEnvironment { ContentRootPath = root });
+var deployed = deploymentService.GetConfiguration();
+if (!deployed.ConnectionDetailsAvailable || deployed.SslMode != "VerifyFull" || deployed.RootCertificate != "/certs/synthetic-ca.crt" || deployed.PasswordConfigured ||
+    JsonSerializer.Serialize(deployed).Contains("synthetic-deployment-secret", StringComparison.Ordinal))
+    throw new Exception("Debe mostrar TLS del despliegue sin revelar ni reutilizar su clave.");
 var result = await service.TestConnectionAsync(new DatabaseConfigurationInput
 {
     Provider = "MySql", Host = "127.0.0.1", Port = port, DatabaseName = database,
@@ -122,6 +136,46 @@ if (args.Length == 2)
         Username = pgUser, Password = "synthetic;value=123", SslMode = "Require", AutoInitialize = false
     });
     if (!pgResult.Success) throw new Exception("PostgreSQL debe aceptar claves con delimitadores.");
+    var verifiedJson = JsonSerializer.Serialize(new
+    {
+        provider = "PostgreSql", host = args[1], port = 15432, databaseName = pgDatabase,
+        username = pgUser, password = "synthetic;value=123", sslMode = "VerifyFull",
+        rootCertificate = "/certs/postgres-ca.crt", autoInitialize = false
+    });
+    var verifiedInput = JsonSerializer.Deserialize<DatabaseConfigurationInput>(verifiedJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    var legacyInput = new DatabaseConfigurationInput
+    {
+        Provider = "PostgreSql", Host = args[1], Port = 15432, DatabaseName = pgDatabase,
+        Username = pgUser, Password = "synthetic;value=123", SslMode = "Disable", AutoInitialize = false
+    };
+    if (!(await service.SaveConfigurationAsync(legacyInput)).Success || service.GetConfiguration().SslMode != "Disable")
+        throw new Exception("Debe reconocer la configuracion heredada antes de corregirla.");
+    var verifiedTest = await service.TestConnectionAsync(verifiedInput);
+    if (!verifiedTest.Success) throw new Exception("PostgreSQL VerifyFull debe aceptar la CA sintetica y la IP correcta.");
+    var saved = await service.SaveConfigurationAsync(verifiedInput);
+    if (!saved.Success) throw new Exception("Debe guardar la conexion TLS verificada.");
+    var publicConfig = service.GetConfiguration();
+    var publicJson = JsonSerializer.Serialize(publicConfig);
+    if (publicJson.Contains("synthetic;value=123", StringComparison.Ordinal)) throw new Exception("La configuracion no debe exponer la clave.");
+    var persisted = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root, "adminweb-runtime.json")));
+    var savedConnection = new NpgsqlConnectionStringBuilder(persisted.RootElement.GetProperty("database").GetProperty("connectionString").GetString());
+    if (savedConnection.SslMode != SslMode.VerifyFull || savedConnection.RootCertificate != "/certs/postgres-ca.crt")
+        throw new Exception("La configuracion persistida debe conservar VerifyFull y la CA.");
+    var badJson = verifiedJson.Replace("/certs/postgres-ca.crt", "/certs/missing.crt", StringComparison.Ordinal);
+    var badInput = JsonSerializer.Deserialize<DatabaseConfigurationInput>(badJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    var previousDocument = await File.ReadAllTextAsync(Path.Combine(root, "adminweb-runtime.json"));
+    if ((await service.SaveConfigurationAsync(badInput)).Success) throw new Exception("No debe guardar una CA incorrecta.");
+    if (previousDocument != await File.ReadAllTextAsync(Path.Combine(root, "adminweb-runtime.json"))) throw new Exception("Un fallo no debe sobrescribir la configuracion anterior.");
+    var wrongHostJson = verifiedJson.Replace(args[1], "wrong-postgres.invalid", StringComparison.Ordinal);
+    var wrongHostInput = JsonSerializer.Deserialize<DatabaseConfigurationInput>(wrongHostJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    if ((await service.TestConnectionAsync(wrongHostInput)).Success) throw new Exception("VerifyFull debe rechazar un nombre incorrecto.");
+    var sameJson = verifiedJson.Replace("synthetic;value=123", "", StringComparison.Ordinal);
+    var sameInput = JsonSerializer.Deserialize<DatabaseConfigurationInput>(sameJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    if (!(await service.TestConnectionAsync(sameInput)).Success) throw new Exception("Debe reutilizar la clave para el mismo destino.");
+    var otherJson = sameJson.Replace(pgDatabase, "postgres", StringComparison.Ordinal);
+    var otherInput = JsonSerializer.Deserialize<DatabaseConfigurationInput>(otherJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    if ((await service.TestConnectionAsync(otherInput)).Success) throw new Exception("No debe reutilizar la clave para otra base.");
+    Console.WriteLine("PASS PostgreSQL: CA verificada, guardado seguro y clave ligada al destino.");
     pgAdmin.Database = pgDatabase;
     await using (var connection = new NpgsqlConnection(pgAdmin.ConnectionString))
     {

@@ -509,6 +509,10 @@ label {
     font-size: 0.92rem;
 }
 
+#dbRootCertificateField[hidden] {
+    display: none;
+}
+
 input,
 select {
     width: 100%;
@@ -1290,6 +1294,61 @@ tbody tr:hover {
     border-radius: 16px;
     background: rgba(248, 250, 252, 0.82);
     border: 1px solid var(--line-soft);
+}
+
+.config-summary {
+    margin: 0 0 1rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid var(--line-soft);
+    border-radius: 16px;
+    background: var(--surface-muted);
+    color: var(--ink);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.form-disclosure {
+    border: 1px solid var(--line-soft);
+    border-radius: 16px;
+    background: rgba(248, 250, 252, 0.72);
+    padding: 0.85rem 1rem;
+}
+
+.form-disclosure > summary,
+.config-sidecard > summary {
+    cursor: pointer;
+    color: var(--ink);
+    font-weight: 700;
+    line-height: 1.4;
+}
+
+.form-disclosure > summary:focus-visible,
+.config-sidecard > summary:focus-visible {
+    outline: 3px solid var(--primary);
+    outline-offset: 3px;
+}
+
+.form-disclosure > form,
+.disclosure-content,
+.config-sidecard > :not(summary) {
+    margin-top: 1rem;
+}
+
+.report-advanced {
+    margin-top: 1rem;
+}
+
+.overview-details {
+    margin: 1rem 0;
+}
+
+.overview-details > .section-card,
+.overview-details > .overview-grid {
+    margin-top: 1rem;
+}
+
+#resetPasswordBtn[hidden] {
+    display: none;
 }
 
 .drawer-backdrop {

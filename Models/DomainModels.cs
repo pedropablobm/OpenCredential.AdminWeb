@@ -545,6 +545,7 @@ public sealed class DatabaseConfigurationInput
     public required string Username { get; init; }
     public string? Password { get; init; }
     public string SslMode { get; init; } = "Disable";
+    public string? RootCertificate { get; init; }
     public bool AutoInitialize { get; init; } = true;
 }
 
@@ -561,6 +562,8 @@ public sealed class DatabaseConfigurationResponse
     public bool RuntimeConfigurationExists { get; init; }
     public bool RequiresRestart { get; init; }
     public bool PasswordConfigured { get; init; }
+    public bool ConnectionDetailsAvailable { get; init; }
+    public string? RootCertificate { get; init; }
 }
 
 public sealed class DatabaseConfigurationResult
